@@ -21,6 +21,7 @@ const {
                              // pairing code to type into WhatsApp (Linked devices > Link with phone number instead)
 } = process.env;
 
+const DEBUG = process.env.DEBUG_MESSAGES === '1';   // temporary: logs where each incoming message came from (never its text)
 const log = pino({ level: 'warn' });
 const say = (...a) => console.log(new Date().toISOString(), ...a);
 let sock = null;
@@ -63,10 +64,14 @@ const MEDIA_KEYS = ['imageMessage', 'videoMessage', 'audioMessage', 'documentMes
   'ptvMessage', 'contactMessage', 'locationMessage', 'liveLocationMessage', 'pollCreationMessage'];
 
 function handleUpsert({ messages, type }) {
+  if (DEBUG) say('upsert type=' + type, 'count=' + messages.length);
   if (type !== 'notify') return;                                    // ignore history sync
   for (const msg of messages) {
     try {
       const key = msg.key || {};
+      if (DEBUG) say('msg', 'jid=' + key.remoteJid, 'fromMe=' + key.fromMe, 'hasMessage=' + !!msg.message,
+        'kinds=' + Object.keys(msg.message || {}).join('|'), 'stub=' + (msg.messageStubType ?? '-'),
+        'matchesGroup=' + (key.remoteJid === WHATSAPP_GROUP_ID));
       if (!msg.message || key.fromMe || key.remoteJid !== WHATSAPP_GROUP_ID) continue;   // only our group, never ourselves
       const m = unwrap(msg.message);
       if (m.reactionMessage) continue;
