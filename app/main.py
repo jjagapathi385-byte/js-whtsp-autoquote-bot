@@ -43,6 +43,8 @@ def build_engine():
 
 
 def create_app(engine=None, start_worker=True, async_events=True):
+    # Show INFO lines (what happened to each message) in the Railway logs. Message TEXT is never logged.
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     app = Flask(__name__)
     app.secret_key = config.FLASK_SECRET_KEY or secrets.token_hex(16)   # set FLASK_SECRET_KEY or logins reset on restart
     app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax')
@@ -64,9 +66,21 @@ def create_app(engine=None, start_worker=True, async_events=True):
         except Exception:
             logging.exception('event failed')
 
+    def redis_problem():
+        """None if Redis answers, otherwise the error CLASS name only (never the address or password)."""
+        try:
+            eng.store.r.get('bot:status')
+            return None
+        except Exception as e:
+            logging.exception('Redis check failed')
+            return type(e).__name__
+
     @app.get('/health')
     def health():
-        return jsonify(ok=True)
+        bad = redis_problem()
+        if bad:
+            return jsonify(ok=False, redis=False, error=bad), 503
+        return jsonify(ok=True, redis=True)
 
     @app.post('/incoming')
     def incoming():
@@ -111,6 +125,12 @@ def create_app(engine=None, start_worker=True, async_events=True):
     def admin():
         if not session.get('admin'):
             return login_form()
+        bad = redis_problem()
+        if bad:
+            return page('<h1>JS Auto QuoteBot</h1><div class="card"><h2>Cannot reach Redis</h2>'
+                        f'<p class="bad">{esc(bad)}</p><p>Check the <b>REDIS_URL</b> variable of this service in Railway: '
+                        'it must be the <b>rediss://</b> connection URL from Upstash with the current password. '
+                        'Then redeploy. The app itself is running.</p></div>'), 503
         st = eng.store
         running = st.status() == 'RUNNING'
         age = time.time() - st.last_heartbeat() if st.last_heartbeat() else None
