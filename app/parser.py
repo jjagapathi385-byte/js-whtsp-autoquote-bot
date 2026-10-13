@@ -4,79 +4,95 @@
 - per item: line_total, unit_type (measure/count/none), measure_text, raw_line
 - measure units (meters, mtrs, ft, kg, litre...) are NOT divided into qty x unit price
 Code in rules.py enforces the measure/total rules even if the model slips."""
+import re
+from difflib import SequenceMatcher
+
 from . import groq_client
 
-PROMPT = """You are a quotation parser for an Indian hardware/electrical supplies business.
-
-Parse this WhatsApp quotation message and return ONLY a valid JSON object. No markdown, no explanation.
+PROMPT = """Parse this WhatsApp quotation message from an Indian hardware / electrical / maintenance business.
+Return ONLY one JSON object, nothing else.
 
 Message:
 ---
 __MESSAGE__
 ---
 
+JSON shape:
+{"customer_name":"","email":"","notes":"","stated_total":0,"work_description":"","items":[{"name":"","quantity":1,"unit_price":0,"line_total":0,"is_service":false}]}
+
 Rules:
-1. Extract customer/store name from the first line or header (include store code and location words if present).
-2. For each item: name, quantity (default 1), unit_price, line_total, unit_type, measure_text, raw_line.
-   - line_total = the amount printed for that line in the message (always fill it).
-   - raw_line = the original text of that item line, copied exactly.
-   - unit_type is one of:
-     "count"   -> counted pieces: no, nos, pcs, sets, bags, rolls, boxes, or explicit multiplication like 2*650.
-                  Set quantity and unit_price (if a total is given for several pieces, unit_price = total / quantity,
-                  e.g. "5nos 1000" -> quantity 5, unit_price 200; "2*650- 1300" -> quantity 2, unit_price 650).
-     "measure" -> a length/weight/volume amount: meters, mtrs, m, feet, ft, sq ft, kg, grams, litre, ltr, L, ml.
-                  quantity MUST be 1, unit_price = line_total, measure_text = the measure exactly as typed
-                  (e.g. "10 meters", "10 mtrs", "15 L"). Do NOT divide the price.
-                  "Sofa cloth 10 meters 2100" -> name "Sofa cloth", quantity 1, unit_price 2100, measure_text "10 meters".
-     "none"    -> no quantity or measure given.
-   - Sizes are part of the item NAME, never a quantity: "50mm cable", "2.5 sq mm wire", "12 inch pipe".
-   - Price may be STUCK to the item name with no space — always split it:
-     "scolding7500" -> name="Scolding", unit_price=7500; "labour charges11000" -> name="Labour Charges", unit_price=11000
-   - Any separator like period(.), dash(-), slash(/), colon between item and price is a separator, not a decimal.
-   - If an item has NO price in the message, set unit_price and line_total to 0. Never invent prices.
-3. IMPORTANT - Correct item names: fix typos, expand abbreviations, use proper industry names.
-   Examples: "brazing rad pipe" -> "Brazing Rod Pipe", "magnitor" -> "Magnetron", "fevi bond" -> "Fevibond Adhesive",
-   "R 32 gas" -> "R32 Refrigerant Gas", "led lt" -> "LED Light", "ac servic" -> "AC Service",
-   "Bolyer moter repair" -> "Boiler Motor Repair", "heate slevs" -> "Heater Sleeves".
-   Always use proper English, correct spelling, full words. Do not put the measure in the name.
-4. TOTAL lines ("Total", "Total Cost Above listed", "Amount", "Tot amount", "Grand total") are NOT items.
-   Put that number in stated_total (0 if none is stated). Never add a total as an item.
-5. listed_as (per item): the item as it should read in a list — corrected name followed by its quantity or
-   measure exactly as typed, e.g. "16sq mm Wire 10mtr", "Pin Type Lugs 8nos", "Nuts and Bolts 16nos". No price.
-6. work_description: a short title (2-6 words, Title Case) for the kind of work. Fill it when NO item has its own price and
-   only a total is given (e.g. "Electrical Work", "AC Repair Work"), AND whenever the message gives a work description
-   with a single amount (rule 7). Otherwise return an empty string. Do not repeat it in notes.
-7. WORK + AMOUNT messages: if the message has a "Work:" / "Work description" part and an "Amount", with no separate
-   item lines, return ONE item: name = the work description cleaned up (Title Case, e.g. "Glass Door Floor Spring
-   Replacement And Fitting Charges"), quantity 1, unit_price = the amount, line_total = the amount, unit_type "none",
-   is_service true; also set stated_total to the amount and work_description to the same text.
+1. customer_name: the store/customer from the header (keep the store code and place words).
+2. email: every email address found, comma separated, else "".
+3. items: one per line of work/material. name = corrected proper English (fix typos: "magnitor" -> "Magnetron",
+   "Bolyer moter repair" -> "Boiler Motor Repair"); keep sizes inside the name ("50mm cable", "2.5 sq mm wire");
+   never put a quantity or a length in the name.
+   - line_total = the amount printed on that line. A price stuck to the name ("scolding7500") must be split.
+   - Counted pieces (no, nos, pcs, sets, bags, rolls, boxes, or "2*650"): quantity = pieces, unit_price = line_total / quantity.
+   - Lengths, weights, volumes (meters, mtrs, ft, kg, litre, L, ml): quantity = 1 and unit_price = line_total (never divide).
+   - A line with no price: unit_price 0 and line_total 0. Never invent a price.
+4. TOTAL lines ("Total", "Tot amount", "Amount", "Grand total", "Cost above listed") are NOT items: put that number in
+   stated_total (0 if none).
+5. work_description: 2-6 words, Title Case, the kind of work (e.g. "Electrical Work"). Fill it ONLY when no line has its own
+   price (just a total), or when the message is "Work: ... Amount ..." with no item lines: then also return ONE item with
+   name = that work text cleaned up (Title Case), quantity 1, unit_price = line_total = the amount, is_service true, and
+   stated_total = the amount. Otherwise "".
+6. notes: only useful work context (e.g. "AC repair work", "walk in freezer"). Leave "" for totals, "please share/send
+   quotation", urgent/ASAP, advance or payment requests, email addresses, and the store/customer name.
+"""
 
-Return this exact JSON:
-{
-  "customer_name": "name here",
-  "email": "every email address found, comma separated, or empty string if none",
-  "notes": "work description or context only — see rules below",
-  "stated_total": 0,
-  "work_description": "",
-  "items": [
-    {"name": "item name", "quantity": 1, "unit_price": 0.0, "line_total": 0.0,
-     "unit_type": "count|measure|none", "measure_text": "", "raw_line": "", "listed_as": "", "is_service": false}
-  ]
-}
 
-For email: extract EVERY email address found anywhere in the message, comma separated. Empty string if none.
-For notes — strict rules:
-INCLUDE in notes: work description or context (e.g. "AC repair work", "walk in freezer", "glass door side holders assemble work").
-EXCLUDE from notes (set empty string if only these exist):
-- Any total / grand total lines (e.g. "Total 3200", "Total Cost 6500", "Grand Total")
-- "Please share the quotation" or similar share/send requests, "Kindly share quotation"
-- "Urgent", "ASAP" or similar filler words alone
-- Advance / payment requests (e.g. "need advance amount 2000")
-- Email addresses (they are captured separately)
-- "Send quotation" type phrases
-- Store name or customer name (already captured separately)
-If nothing valid for notes -> return empty string "".
-ONLY return the JSON. Nothing else."""
+# ── Everything below is worked out in code, so the AI does not spend tokens writing it ──
+_QTY = re.compile(r'(?<![A-Za-z0-9])(\d+(?:\.\d+)?\s*(?:mtrs?|meters?|metres?|m|ft|feet|foot|kgs?|gms?|grams?|ltrs?|litres?|liters?|l|ml|'
+                  r'nos?|pcs?|pieces?|sets?|bags?|rolls?|boxes?))\b', re.I)
+
+
+def _segments(message):
+    """Lines of the message, further split at commas/semicolons: 'a, b, c' lists are three items."""
+    segs = []
+    for line in (message or '').splitlines():
+        for part in re.split(r'[;,]\s*', line):
+            if part.strip():
+                segs.append(part.strip())
+    return segs
+
+
+def _words(text):
+    return [w for w in re.findall(r'[a-z0-9]+', (text or '').lower()) if len(w) >= 3]
+
+
+def _best_segment(name, segments, used):
+    """The part of the message an item came from (typos in the message vs the corrected name are tolerated)."""
+    nw = _words(name)
+    if not nw:
+        return ''
+    best, best_score = '', 0.0
+    for idx, seg in enumerate(segments):
+        sw = _words(seg)
+        if not sw:
+            continue
+        hit = sum(1 for w in nw if any(w == x or w in x or x in w or SequenceMatcher(None, w, x).ratio() >= 0.8 for x in sw))
+        score = hit / len(nw) - (0.05 if idx in used else 0)
+        if score > best_score:
+            best, best_score, best_idx = seg, score, idx
+    if best_score >= 0.4:
+        used.add(best_idx)
+        return best
+    return ''
+
+
+def _enrich(items, message):
+    """Add raw_line, unit_type, measure_text and listed_as (used by rules.py) without asking the AI for them."""
+    from .rules import MEASURE_RE
+    segs, used = _segments(message), set()
+    for it in items:
+        raw = _best_segment(it['name'], segs, used)
+        it['raw_line'] = raw
+        m = MEASURE_RE.search(raw)
+        it['measure_text'] = m.group(0).strip() if m else ''
+        it['unit_type'] = 'measure' if m else ('count' if it['quantity'] != 1 else 'none')
+        q = _QTY.search(raw)
+        it['listed_as'] = f"{it['name']} {q.group(1).replace(' ', '')}".strip() if q else it['name']
+    return items
 
 
 def _num(v):
@@ -91,7 +107,7 @@ def parse_message(message, **groq_kwargs):
     if len(msg) > 3000:  # same guard as the existing QuoteBot
         msg = msg[:3000]
     lines = msg.count('\n') + 1
-    data = groq_client.chat_json(PROMPT.replace('__MESSAGE__', msg), max_tokens=min(1400, 350 + 110 * lines),
+    data = groq_client.chat_json(PROMPT.replace('__MESSAGE__', msg), max_tokens=min(900, 200 + 60 * lines),
                                  temperature=0.1, expect=dict, **groq_kwargs)
     items = []
     for it in data.get('items') or []:
@@ -102,10 +118,6 @@ def parse_message(message, **groq_kwargs):
             quantity=_num(it.get('quantity')) or 1.0,
             unit_price=_num(it.get('unit_price')),
             line_total=_num(it.get('line_total')),
-            unit_type=str(it.get('unit_type') or 'none').lower(),
-            measure_text=str(it.get('measure_text') or '').strip(),
-            raw_line=str(it.get('raw_line') or '').strip(),
-            listed_as=str(it.get('listed_as') or '').strip(),
             is_service=bool(it.get('is_service', False)),
         ))
     return dict(
@@ -114,5 +126,5 @@ def parse_message(message, **groq_kwargs):
         notes=str(data.get('notes', '') or '').strip(),
         stated_total=_num(data.get('stated_total')),
         work_description=str(data.get('work_description', '') or '').strip(),
-        items=items,
+        items=_enrich(items, msg),
     )

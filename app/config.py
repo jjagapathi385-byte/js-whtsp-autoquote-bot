@@ -53,12 +53,16 @@ DEFAULT_CUSTOMER_NOTE = os.environ.get(
     'Quote created without the proper customer name. The proper customer name will be added while creating the PO.')
 
 # ── Groq: models, token pacing, retries ───────────────────────────────────────
+# Models are tried in this order. The first is a normal (non-reasoning) model: this job needs a short JSON answer, and
+# reasoning models spend a big part of the token budget on hidden thinking (which can even leave the answer empty).
 # Models are tried in this order. Groq limits tokens PER MODEL per minute (free plan: 8000 for gpt-oss-120b and
 # gpt-oss-20b, 12000 for llama-3.3-70b-versatile), so a chain of different models spreads the load.
 # A model your account cannot use (error "model_not_found") is skipped automatically for an hour.
 GROQ_MODELS = [m.strip() for m in os.environ.get(
-    'GROQ_MODELS', 'openai/gpt-oss-120b,llama-3.3-70b-versatile,openai/gpt-oss-20b').split(',') if m.strip()]
+    'GROQ_MODELS', 'llama-3.3-70b-versatile,openai/gpt-oss-120b,openai/gpt-oss-20b').split(',') if m.strip()]
 GROQ_TPM_LIMIT = int(os.environ.get('GROQ_TPM_LIMIT', '8000'))   # tokens per minute per model (lower it if you still see 429s)
 GROQ_TPM_SAFETY = float(os.environ.get('GROQ_TPM_SAFETY', '0.85'))
 MAX_AI_RETRIES = int(os.environ.get('MAX_AI_RETRIES', '3'))      # a message is retried this many times when the AI is busy
 AI_RETRY_DELAY_SECONDS = int(os.environ.get('AI_RETRY_DELAY_SECONDS', '60'))
+GROQ_REASONING_EFFORT = os.environ.get('GROQ_REASONING_EFFORT', 'low')   # sent only to openai/gpt-oss-* models; '' = do not send
+GROQ_REASONING_HEADROOM = int(os.environ.get('GROQ_REASONING_HEADROOM', '500'))   # extra output tokens reserved for hidden thinking
