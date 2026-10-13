@@ -25,6 +25,8 @@ class Engine:
         self.store, self.zoho, self.deps, self.now = store, zoho, deps, now
         self.lock = threading.RLock()          # events, admin actions and timer pickup never interleave
         self._info = (0, set(), [])
+        if getattr(deps, 'now', None) is None:
+            deps.now = now
 
     # ── helpers ──
     def customer_info(self):

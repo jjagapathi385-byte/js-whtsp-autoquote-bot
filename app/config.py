@@ -5,8 +5,8 @@ MARKUP = float(os.environ.get('MARKUP', '1.10'))            # 10% markup, same a
 TIMER_SECONDS = int(os.environ.get('TIMER_SECONDS', '180'))  # 3-minute wait per message
 
 # Total-mismatch safety limits (see brief section 9)
-TOTAL_RATIO_HIGH = float(os.environ.get('TOTAL_RATIO_HIGH', '2.0'))  # sum >= 2x stated total -> flag
-TOTAL_RATIO_LOW = float(os.environ.get('TOTAL_RATIO_LOW', '0.5'))    # sum <= 0.5x stated total -> flag
+TOTAL_RATIO_HIGH = float(os.environ.get('TOTAL_RATIO_HIGH', '0'))    # 0 = off (item prices always win over a wrong total)
+TOTAL_RATIO_LOW = float(os.environ.get('TOTAL_RATIO_LOW', '0'))      # 0 = off. e.g. 2.0 / 0.5 would flag sums far from the total
 MONEY_TOLERANCE = 1.0  # rupees; differences up to this count as "matches"
 
 # Staged rollout switches (defaults are the safest: dry-run on, posting off)
@@ -51,3 +51,14 @@ DEFAULT_CUSTOMER_NAME = os.environ.get('DEFAULT_CUSTOMER_NAME', 'DEFAULT-CUSTOME
 DEFAULT_CUSTOMER_NOTE = os.environ.get(
     'DEFAULT_CUSTOMER_NOTE',
     'Quote created without the proper customer name. The proper customer name will be added while creating the PO.')
+
+# ── Groq: models, token pacing, retries ───────────────────────────────────────
+# Models are tried in this order. Groq limits tokens PER MODEL per minute (free plan: 8000 for gpt-oss-120b and
+# gpt-oss-20b, 12000 for llama-3.3-70b-versatile), so a chain of different models spreads the load.
+# A model your account cannot use (error "model_not_found") is skipped automatically for an hour.
+GROQ_MODELS = [m.strip() for m in os.environ.get(
+    'GROQ_MODELS', 'openai/gpt-oss-120b,llama-3.3-70b-versatile,openai/gpt-oss-20b').split(',') if m.strip()]
+GROQ_TPM_LIMIT = int(os.environ.get('GROQ_TPM_LIMIT', '8000'))   # tokens per minute per model (lower it if you still see 429s)
+GROQ_TPM_SAFETY = float(os.environ.get('GROQ_TPM_SAFETY', '0.85'))
+MAX_AI_RETRIES = int(os.environ.get('MAX_AI_RETRIES', '3'))      # a message is retried this many times when the AI is busy
+AI_RETRY_DELAY_SECONDS = int(os.environ.get('AI_RETRY_DELAY_SECONDS', '60'))

@@ -35,6 +35,7 @@ class MatchResult:
     reason: str = ''
     method: str = ''                 # code | location | ai
     assumed_brand: str = ''          # set when the brand came from the sender's earlier message
+    ai_failed: bool = False          # the AI could not be reached while deciding (caller retries later)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -150,6 +151,22 @@ def _evidence_ok(evidence, header, customer_name):
 
 
 # ── customer matching ─────────────────────────────────────────────────────────
+def _shortlist(header, pool, n=25):
+    """Only the most similar customers go to the AI (a prompt with hundreds of names blows the token limit)."""
+    if len(pool) <= n:
+        return pool
+    compact = re.sub(r'[^A-Z0-9]', '', header.upper())
+    words = _words(header)
+
+    def score(c):
+        total = 0.0
+        for t in _cust_tokens(c['contact_name']):
+            best = 1.0 if t in compact else max([SequenceMatcher(None, w, t).ratio() for w in words] or [0.0])
+            total += best if best >= 0.6 else 0.0
+        return total
+    return sorted(pool, key=score, reverse=True)[:n]
+
+
 def _ai_pick(header, pool, llm):
     names = '\n'.join(f"{i+1}. {c['contact_name']}" for i, c in enumerate(pool))
     prompt = f"""Match this store description to the correct customer from the list below.
@@ -173,7 +190,7 @@ def match_customer(message, ai_name, customers, llm=None, context_brand=None):
     """Return a MatchResult. `llm(prompt)` returns the parsed JSON (defaults to Groq).
     `context_brand`: brand from the same sender's earlier message (used only when this message has no
     brand word and no store code)."""
-    llm = llm or (lambda p: groq_client.chat_json(p, max_tokens=300, temperature=0, expect=dict))
+    llm = llm or (lambda p: groq_client.chat_json(p, max_tokens=160, temperature=0, expect=dict))
     # Store code — attempt 1: the AI-parsed customer name; attempt 2: the raw WhatsApp message.
     known = known_codes(customers)
     name_codes = extract_codes(ai_name or '')
@@ -228,11 +245,12 @@ def _match_in_pool(header, pool, llm, note=''):
         return MatchResult('matched', top[0], [top[0]['contact_name']], note + 'location words', 'location')
 
     # AI only for no match or a tie, with strict acceptance rules
-    ai_pool = top if len(top) > 1 else pool
+    ai_pool = _shortlist(header, top if len(top) > 1 else pool)       # never more than ~25 names go to the AI
+    ai_failed = False
     try:
         res = _ai_pick(header, ai_pool, llm)
     except Exception as e:
-        res = {}
+        res, ai_failed = {}, True
         note += f'AI unavailable ({e}); '
     try:
         idx = int(res.get('match', 0)) - 1
@@ -246,20 +264,69 @@ def _match_in_pool(header, pool, llm, note=''):
 
     if len(top) > 1:
         return MatchResult('ambiguous', None, [c['contact_name'] for c in top][:8],
-                           note + 'several customers fit equally well', 'location')
-    return MatchResult('none', None, [], note + 'no confident customer match', 'ai')
+                           note + 'several customers fit equally well', 'location', ai_failed=ai_failed)
+    return MatchResult('none', None, [], note + 'no confident customer match', 'ai', ai_failed=ai_failed)
 
 
 # ── item matching and HSN (single Groq call each, as in the existing QuoteBot) ─
+def _norm(name):
+    return re.sub(r'[^a-z0-9]', '', (name or '').lower())
+
+
+def _item_candidates(name, zoho_items, n=6, floor=0.55):
+    """The few Zoho items that look like `name`, best first. Cheap string similarity, no AI."""
+    q = (name or '').lower()
+    qwords = set(re.findall(r'[a-z0-9]+', q))
+    scored = []
+    for i, it in enumerate(zoho_items):
+        z = (it.get('name') or '').lower()
+        zwords = set(re.findall(r'[a-z0-9]+', z))
+        overlap = len(qwords & zwords) / max(1, len(qwords | zwords))
+        score = max(SequenceMatcher(None, q, z).ratio(), overlap)
+        if score >= floor:
+            scored.append((score, i))
+    return [i for _, i in sorted(scored, reverse=True)[:n]]
+
+
 def match_all_items(item_names, zoho_items, llm=None):
-    """Return {index: zoho_item or None}. One Groq call for all items together."""
-    llm = llm or (lambda p: groq_client.chat_json(p, max_tokens=500, temperature=0, expect=list))
+    """Return {index: zoho_item or None}.
+
+    1. identical names (ignoring case/spaces/punctuation) match with no AI call;
+    2. items that look like nothing in Zoho are new, with no AI call;
+    3. only the rest go to ONE small AI call that sees just a short list of look-alike Zoho items
+       (sending the whole Zoho item list would blow the Groq token limit).
+    If the AI call fails the error is RAISED, so the caller retries; it never guesses 'everything is new'
+    (that would create duplicate items in Zoho)."""
     if not item_names:
         return {}
+    result = {i: None for i in range(len(item_names))}
     if not zoho_items:
-        return {i: None for i in range(len(item_names))}
-    zoho_names = '\n'.join(f"{i+1}. {itm['name']}" for i, itm in enumerate(zoho_items))
-    input_names = '\n'.join(f'{i+1}. {n}' for i, n in enumerate(item_names))
+        return result
+    by_norm = {}
+    for it in zoho_items:
+        by_norm.setdefault(_norm(it.get('name')), it)
+    undecided = []                                           # (input index, candidate zoho indexes)
+    for i, name in enumerate(item_names):
+        hit = by_norm.get(_norm(name))
+        if hit:
+            result[i] = hit
+            continue
+        cands = _item_candidates(name, zoho_items)
+        if cands:
+            undecided.append((i, cands))
+    if not undecided:
+        return result
+
+    union = []
+    for _, cands in undecided:
+        for c in cands:
+            if c not in union:
+                union.append(c)
+    union = union[:40]
+    llm = llm or (lambda p: groq_client.chat_json(p, max_tokens=min(600, 60 + 40 * len(undecided)),
+                                                  temperature=0, expect=list))
+    zoho_names = '\n'.join(f"{k+1}. {zoho_items[z]['name']}" for k, z in enumerate(union))
+    input_names = '\n'.join(f'{k+1}. {item_names[i]}' for k, (i, _) in enumerate(undecided))
     prompt = f"""Match each input item to the closest item in the Zoho list.
 
 Input items:
@@ -277,20 +344,17 @@ Rules:
 Reply ONLY with a valid JSON array, one entry per input item, in order:
 [{{"input": 1, "zoho": 5}}, {{"input": 2, "zoho": 0}}]
 0 means no match found. Nothing else in your response."""
-    result = {i: None for i in range(len(item_names))}
-    try:
-        for entry in llm(prompt):
-            i, z = int(entry.get('input', 0)) - 1, int(entry.get('zoho', 0)) - 1
-            if 0 <= i < len(item_names) and 0 <= z < len(zoho_items):
-                result[i] = zoho_items[z]
-    except Exception:
-        return {i: None for i in range(len(item_names))}   # caller will create the items
+    for entry in llm(prompt):
+        k, z = int(entry.get('input', 0)) - 1, int(entry.get('zoho', 0)) - 1
+        if 0 <= k < len(undecided) and 0 <= z < len(union):
+            result[undecided[k][0]] = zoho_items[union[z]]
     return result
 
 
 def detect_hsn(item_names, llm=None):
     """Return {index: {hsn_or_sac, is_service}}. One Groq call for all new items together."""
-    llm = llm or (lambda p: groq_client.chat_json(p, max_tokens=1000, temperature=0, expect=list))
+    llm = llm or (lambda p: groq_client.chat_json(p, max_tokens=min(900, 80 + 70 * len(item_names)),
+                                                  temperature=0, expect=list))
     if not item_names:
         return {}
     numbered = '\n'.join(f'{i+1}. {n}' for i, n in enumerate(item_names))
@@ -327,12 +391,9 @@ Rules:
 Reply ONLY with a valid JSON array. No markdown, no explanation, nothing else:
 [{{"item": 1, "hsn_or_sac": "94054090", "is_service": false}}]"""
     result = {}
-    try:
-        for entry in llm(prompt):
-            idx = int(entry.get('item', 0)) - 1
-            if idx >= 0:
-                result[idx] = {'hsn_or_sac': str(entry.get('hsn_or_sac', '99999999')),
-                               'is_service': bool(entry.get('is_service', False))}
-    except Exception:
-        return {}
+    for entry in llm(prompt):                        # a failure is raised: the caller retries, never a wrong HSN
+        idx = int(entry.get('item', 0)) - 1
+        if idx >= 0:
+            result[idx] = {'hsn_or_sac': str(entry.get('hsn_or_sac', '99999999')),
+                           'is_service': bool(entry.get('is_service', False))}
     return result

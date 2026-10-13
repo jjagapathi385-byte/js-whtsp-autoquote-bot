@@ -43,14 +43,18 @@ Rules:
    Put that number in stated_total (0 if none is stated). Never add a total as an item.
 5. listed_as (per item): the item as it should read in a list — corrected name followed by its quantity or
    measure exactly as typed, e.g. "16sq mm Wire 10mtr", "Pin Type Lugs 8nos", "Nuts and Bolts 16nos". No price.
-6. work_description: ONLY when NO item has its own price and only a total is given — a short title (2-4 words,
-   Title Case) for the kind of work, e.g. "Electrical Work", "AC Repair Work", "Walk-in Freezer Work".
-   Otherwise return an empty string. Do not repeat it in notes.
+6. work_description: a short title (2-6 words, Title Case) for the kind of work. Fill it when NO item has its own price and
+   only a total is given (e.g. "Electrical Work", "AC Repair Work"), AND whenever the message gives a work description
+   with a single amount (rule 7). Otherwise return an empty string. Do not repeat it in notes.
+7. WORK + AMOUNT messages: if the message has a "Work:" / "Work description" part and an "Amount", with no separate
+   item lines, return ONE item: name = the work description cleaned up (Title Case, e.g. "Glass Door Floor Spring
+   Replacement And Fitting Charges"), quantity 1, unit_price = the amount, line_total = the amount, unit_type "none",
+   is_service true; also set stated_total to the amount and work_description to the same text.
 
 Return this exact JSON:
 {
   "customer_name": "name here",
-  "email": "email@example.com or empty string if none",
+  "email": "every email address found, comma separated, or empty string if none",
   "notes": "work description or context only — see rules below",
   "stated_total": 0,
   "work_description": "",
@@ -60,13 +64,15 @@ Return this exact JSON:
   ]
 }
 
-For email: extract an email address if found anywhere in the message. Empty string if none.
+For email: extract EVERY email address found anywhere in the message, comma separated. Empty string if none.
 For notes — strict rules:
 INCLUDE in notes: work description or context (e.g. "AC repair work", "walk in freezer", "glass door side holders assemble work").
 EXCLUDE from notes (set empty string if only these exist):
 - Any total / grand total lines (e.g. "Total 3200", "Total Cost 6500", "Grand Total")
 - "Please share the quotation" or similar share/send requests, "Kindly share quotation"
 - "Urgent", "ASAP" or similar filler words alone
+- Advance / payment requests (e.g. "need advance amount 2000")
+- Email addresses (they are captured separately)
 - "Send quotation" type phrases
 - Store name or customer name (already captured separately)
 If nothing valid for notes -> return empty string "".
@@ -84,7 +90,8 @@ def parse_message(message, **groq_kwargs):
     msg = (message or '').strip()
     if len(msg) > 3000:  # same guard as the existing QuoteBot
         msg = msg[:3000]
-    data = groq_client.chat_json(PROMPT.replace('__MESSAGE__', msg), max_tokens=2000,
+    lines = msg.count('\n') + 1
+    data = groq_client.chat_json(PROMPT.replace('__MESSAGE__', msg), max_tokens=min(1400, 350 + 110 * lines),
                                  temperature=0.1, expect=dict, **groq_kwargs)
     items = []
     for it in data.get('items') or []:

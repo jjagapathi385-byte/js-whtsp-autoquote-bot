@@ -1,9 +1,13 @@
 """One quote, start to finish (brief section 8). Called once per message when its 3-minute timer expires.
 
 Any doubt -> Telegram flag and NO quote. In dry-run mode nothing is written to Zoho and nothing is
-posted to WhatsApp: Telegram just previews what would be created."""
+posted to WhatsApp: Telegram just previews what would be created.
+
+When the AI service is only temporarily unavailable (busy / token limit) the message is put back with a
+short delay and tried again (up to MAX_AI_RETRIES) instead of being flagged or guessed."""
 import logging
 import re
+import time
 from dataclasses import dataclass
 
 from . import config, matching, notify, parser, rules
@@ -21,25 +25,39 @@ class Deps:
     bridge: object = None       # has send_document(filename, data, caption)
     parse: callable = None      # parse(message) -> dict   (defaults to Groq parser)
     llm: callable = None        # llm(prompt) -> parsed JSON for matching/HSN calls; None = Groq
+    now: callable = None        # clock (set by the engine)
 
 
-def _email(parsed, text):
-    for cand in (parsed.get('email') or '', ''):
-        m = EMAIL_RE.search(cand)
-        if m:
-            return m.group(0)
-    m = EMAIL_RE.search(text or '')           # parser missed it? look in the raw message
-    return m.group(0) if m else ''
+def _emails(parsed, text):
+    """Every distinct email address given with the request (parser field first, then the raw message)."""
+    found, seen = [], set()
+    for src in (parsed.get('email') or '', text or ''):
+        for e in EMAIL_RE.findall(src):
+            if e.lower() not in seen:
+                seen.add(e.lower())
+                found.append(e)
+    return found
 
 
 def process_message(msg, d):
     text, sender = msg['text'], msg.get('sender', '')
     dry = d.store.flag('dry_run', config.DRY_RUN_DEFAULT)
     post = d.store.flag('post_to_group', config.POST_TO_GROUP_DEFAULT)
+    clock = d.now or time.time
 
     def flag(issues, store='unknown'):
         d.notify(notify.quote_flagged(sender, store, issues, text, dry_run=dry))
         return {'status': 'flagged', 'issues': issues}
+
+    def retry(reason, store='unknown'):
+        """The AI is busy or unreachable: try this message again shortly instead of guessing."""
+        n = msg.get('retries', 0)
+        if n >= config.MAX_AI_RETRIES:
+            return flag([f'AI service unavailable after {n} retries: {reason}'], store)
+        d.store.add_pending(dict(msg, retries=n + 1, due=clock() + config.AI_RETRY_DELAY_SECONDS))
+        logging.warning('AI unavailable (%s); retry %d of %d in %ds', reason, n + 1, config.MAX_AI_RETRIES,
+                        config.AI_RETRY_DELAY_SECONDS)
+        return {'status': 'retry', 'retries': n + 1, 'reason': reason}
 
     # Intake doubted this one. An unclear STORE alone is not a reason to skip it (the default customer is
     # used below); any other doubt (no price, payment words...) is still flagged.
@@ -50,7 +68,7 @@ def process_message(msg, d):
     try:
         parsed = (d.parse or parser.parse_message)(text)
     except GroqError as e:
-        return flag([f'AI parsing unavailable: {e}'])
+        return retry(str(e))
     except Exception as e:
         return flag([f'Could not parse the message: {e}'])
 
@@ -65,6 +83,8 @@ def process_message(msg, d):
     if mr.status == 'matched':
         customer = mr.customer
     else:
+        if mr.ai_failed:                       # the store is not "unclear", the AI just could not answer: retry
+            return retry(mr.reason, name_in_message or 'unknown')
         unclear = mr.reason or 'customer not matched'
         if mr.candidates:
             unclear += ' (possible: ' + ', '.join(mr.candidates[:5]) + ')'
@@ -79,17 +99,20 @@ def process_message(msg, d):
     res = rules.apply_rules(parsed)
     if res['status'] != 'ok':
         return flag(res['issues'], cname)
-    notes = res['notes']
+    emails = _emails(parsed, text)
+    # Notes: work notes, then the email(s) for future reference, then (default customer only) the notice,
+    # and the store/customer name exactly as given in the message as the very LAST line.
+    parts = [res['notes']]
+    if emails:
+        parts.append('Email: ' + ', '.join(emails))
     if used_default:
-        # Notice first, then the store/customer name exactly as given in the message, at the very end.
-        notes = '\n'.join(x for x in [notes, config.DEFAULT_CUSTOMER_NOTE,
-                                      f'Store/customer name given in the message: {name_in_message}'] if x)
+        parts += [config.DEFAULT_CUSTOMER_NOTE, f'Store/customer name given in the message: {name_in_message}']
         res['warnings'].insert(0, f'DEFAULT CUSTOMER USED — store unclear: {unclear}. Name in message: {name_in_message}')
+    notes = '\n'.join(x for x in parts if x)
     if mr.assumed_brand:
         res['warnings'].append(f'Brand {mr.assumed_brand} was assumed from this sender\'s earlier message — please verify')
     lines = res['lines']
     subtotal = round(sum(l['quantity'] * l['rate'] for l in lines), 2)
-    email = _email(parsed, text)
 
     # 4. duplicate guard: same customer AND same amount in the last 30 minutes
     try:
@@ -101,12 +124,17 @@ def process_message(msg, d):
         return flag([f"possible duplicate of {dup.get('estimate_number', 'a recent estimate')} "
                      f"(same customer and amount within {config.DUPLICATE_WINDOW_MINUTES} min)"], cname)
 
-    # 5. items: one Groq call to match all, one to detect HSN/SAC for all new ones
+    # 5. items: one small Groq call to match, one to detect HSN/SAC for the new ones
     try:
         zitems = d.zoho.items()
-        matches = matching.match_all_items([l['name'] for l in lines], zitems, d.llm)
     except Exception as e:
         return flag([f'Zoho item lookup failed: {e}'], cname)
+    try:
+        matches = matching.match_all_items([l['name'] for l in lines], zitems, d.llm)
+    except GroqError as e:
+        return retry(f'item matching: {e}', cname)
+    except Exception as e:
+        return flag([f'Item matching failed: {e}'], cname)
     new_idx = [i for i in range(len(lines)) if not matches.get(i)]
 
     if dry:
@@ -114,13 +142,18 @@ def process_message(msg, d):
         if new_idx:
             warnings.append('New Zoho items would be created: ' + ', '.join(lines[i]['name'] for i in new_idx))
         d.notify(notify.dry_run_preview(sender, cname, res['mode'], lines, res['item_sum'],
-                                        res['stated_total'], email, warnings))
+                                        res['stated_total'], ', '.join(emails), warnings))
         return {'status': 'dry_run', 'customer': cname, 'lines': lines}
 
     # ── live from here ──
     try:
-        tax_id = d.zoho.gst18_tax_id()   # one GST 18% tax; Zoho splits CGST+SGST / IGST by place of supply
         hsn = matching.detect_hsn([lines[i]['name'] for i in new_idx], d.llm) if new_idx else {}
+    except GroqError as e:
+        return retry(f'HSN detection: {e}', cname)
+    except Exception as e:
+        return flag([f'HSN detection failed: {e}'], cname)
+    try:
+        tax_id = d.zoho.gst18_tax_id()   # one GST 18% tax; Zoho splits CGST+SGST / IGST by place of supply
         item_ids = []
         for i, line in enumerate(lines):
             if matches.get(i):
@@ -142,12 +175,12 @@ def process_message(msg, d):
     est_id, number = est.get('estimate_id', ''), est.get('estimate_number', '')
     d.store.mark_processed(msg['id'], {'estimate_id': est_id, 'number': number, 'customer': cname})
 
-    # 7. email and WhatsApp are independent: one failing never blocks the other or re-creates the quote
+    # 7. email (to every address given) and WhatsApp are independent: one failing never blocks the other
     email_status = 'not applicable'
-    if email and est_id:
+    if emails and est_id:
         try:
-            er = d.zoho.send_estimate_email(est_id, email)
-            email_status = f'sent to {email}' if er.get('code', -1) == 0 else f'FAILED ({er.get("message", er)})'
+            er = d.zoho.send_estimate_email(est_id, emails)
+            email_status = f'sent to {", ".join(emails)}' if er.get('code', -1) == 0 else f'FAILED ({er.get("message", er)})'
         except Exception as e:
             email_status = f'FAILED ({e})'
     wa_status = 'not posted (posting is off)'

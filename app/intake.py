@@ -33,7 +33,7 @@ _UNITS = (r'mtrs?|meters?|metres?|m|ft|feet|foot|sq\.?\s*ft|sqft|kgs?|gms?|grams
           r'liters?|l|ml|nos?|pcs?|pieces?|sets?|bags?|rolls?|boxes?|mm|cm|inch|inches')
 # A price: 2-6 digits (or 1,234 style), not glued to letters, not followed by a unit word.
 PRICE_RE = re.compile(
-    r'(?<![A-Za-z0-9.,])(\d{1,3}(?:,\d{3})+|\d{2,6})(?![\d,]|\.\d)(?!\s*(?:' + _UNITS + r')\b)', re.I)
+    r'(?<![A-Za-z0-9.])(?<!\d,)(\d{1,3}(?:,\d{3})+|\d{2,6})(?!\d|,\d|\.\d)(?!\s*(?:' + _UNITS + r')\b)', re.I)
 
 GENERIC_TOKENS = {
     'KFC', 'PHD', 'PH', 'COSTA', 'VAANGO', 'PIZZA', 'HUT', 'HYD', 'HYDERABAD', 'STORE', 'MALL',

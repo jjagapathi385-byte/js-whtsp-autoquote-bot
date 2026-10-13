@@ -88,6 +88,16 @@ def apply_rules(parsed, markup=None):
     items = [i for i in (parsed.get('items') or []) if (i.get('name') or '').strip()
              and not _is_total_line(i.get('name'))]
     if not items:
+        # A "Work: ... Amount 8200" message has no item lines: the work description IS the item (a service).
+        work = (parsed.get('work_description') or '').strip()
+        if stated_total > 0 and work:
+            out['mode'] = 'single_line'
+            out['lines'] = [dict(name=work, description='', quantity=1.0, rate=round(stated_total * markup, 2),
+                                 is_service=True, hsn_or_sac='')]
+            out['item_sum'] = stated_total
+            n, w = notes.lower(), work.lower()
+            out['notes'] = '' if (not n or n in w or w in n) else notes
+            return out
         out['status'] = 'flag'; out['issues'].append('no items found')
         return out
 
@@ -139,12 +149,12 @@ def apply_rules(parsed, markup=None):
                     out['issues'].append('a line equals the stated total and the others already add up '
                                          'to it (total counted as an item?)')
                     return out
-        if item_sum >= stated_total * config.TOTAL_RATIO_HIGH:
+        if config.TOTAL_RATIO_HIGH > 0 and item_sum >= stated_total * config.TOTAL_RATIO_HIGH:
             out['status'] = 'flag'
             out['issues'].append(f'item sum {item_sum:g} is at least {config.TOTAL_RATIO_HIGH:g}x the '
                                  f'stated total {stated_total:g} (misread price or double count?)')
             return out
-        if item_sum <= stated_total * config.TOTAL_RATIO_LOW:
+        if config.TOTAL_RATIO_LOW > 0 and item_sum <= stated_total * config.TOTAL_RATIO_LOW:
             out['status'] = 'flag'
             out['issues'].append(f'item sum {item_sum:g} is at most {config.TOTAL_RATIO_LOW:g}x the '
                                  f'stated total {stated_total:g}')

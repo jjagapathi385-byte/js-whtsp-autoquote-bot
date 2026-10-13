@@ -174,12 +174,14 @@ class Zoho:
             out.append(li)
         return out
 
-    def send_estimate_email(self, estimate_id, to_email):
+    def send_estimate_email(self, estimate_id, to_emails):
+        """to_emails: one address or a list; every address gets the same email (default Zoho template + PDF)."""
+        recipients = [to_emails] if isinstance(to_emails, str) else list(to_emails)
         sent = self.post(f'/estimates/{estimate_id}/status/sent', {}).json()
         if sent.get('code', 0) not in [0, 'success']:
             logging.warning(f'Mark as sent response: {sent}')
         return self.post(f'/estimates/{estimate_id}/email', {
-            'to_mail_ids': [to_email], 'send_from_org_email_id': True, 'attach_pdf': True}).json()
+            'to_mail_ids': recipients, 'send_from_org_email_id': True, 'attach_pdf': True}).json()
 
     def estimate_pdf(self, estimate_id):
         h = self.headers()
