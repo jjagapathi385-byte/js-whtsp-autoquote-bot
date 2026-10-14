@@ -6,6 +6,7 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import qrcodeTerminal from 'qrcode-terminal';
+import { toNum, digits, unwrap, textOf, senderInfo, updateToEvent, buildSendPayload } from './events.js';
 import QRCode from 'qrcode';
 import crypto from 'node:crypto';
 import http from 'node:http';
@@ -29,8 +30,6 @@ let connected = false;
 let lastQr = null;           // newest QR text, served at /qr while linking
 let pairingRequested = false;
 
-const toNum = (x) => (typeof x === 'number' ? x : (x?.toNumber?.() ?? Number(x)));
-const digits = (jid) => (jid && jid.endsWith('@s.whatsapp.net') ? jid.split('@')[0].split(':')[0] : '');
 
 async function post(path, body) {
   if (!FLASK_URL || !BRIDGE_SECRET) { say('FLASK_URL / BRIDGE_SECRET not set'); return false; }
@@ -46,18 +45,6 @@ async function post(path, body) {
     await new Promise((r) => setTimeout(r, 1500));
   }
   return false;
-}
-
-// Unwrap "ephemeral" / "view once" / "document with caption" wrappers
-function unwrap(m) {
-  let cur = m;
-  for (let i = 0; i < 4 && cur; i++) {
-    const inner = cur.ephemeralMessage?.message || cur.viewOnceMessage?.message
-      || cur.viewOnceMessageV2?.message || cur.documentWithCaptionMessage?.message || cur.editedMessage?.message;
-    if (!inner) break;
-    cur = inner;
-  }
-  return cur || {};
 }
 
 const MEDIA_KEYS = ['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage', 'stickerMessage',
@@ -78,11 +65,7 @@ function handleUpsert({ messages, type }) {
 
       const pm = m.protocolMessage;
       const senderJid = key.participant || '';
-      const base = {
-        sender: msg.pushName || digits(senderJid) || digits(key.participantAlt) || senderJid,
-        sender_jid: senderJid,
-        sender_number: digits(senderJid) || digits(key.participantAlt),
-      };
+      const base = senderInfo(key, msg.pushName);
       if (pm) {                                                     // delete / edit of an earlier message
         const t = pm.type;
         const target = pm.key?.id;
@@ -113,6 +96,18 @@ function handleUpsert({ messages, type }) {
   }
 }
 
+// Edits and deletes of earlier messages arrive here (not in messages.upsert) in Baileys 7.
+function handleUpdates(updates) {
+  for (const upd of updates) {
+    try {
+      if (DEBUG) say('update', 'jid=' + upd?.key?.remoteJid, 'id=' + upd?.key?.id, 'keys=' + Object.keys(upd?.update || {}).join('|'),
+        'stub=' + (upd?.update?.messageStubType ?? '-'));
+      const ev = updateToEvent(upd, WHATSAPP_GROUP_ID, Math.floor(Date.now() / 1000));
+      if (ev) { say('forwarding', ev.event, 'of message', ev.id); post('/incoming', ev); }
+    } catch (e) { say('update handling error:', e.message); }
+  }
+}
+
 async function listGroups() {
   try {
     const groups = await sock.groupFetchAllParticipating();
@@ -132,6 +127,7 @@ async function start() {
   });
   sock.ev.on('creds.update', saveCreds);
   sock.ev.on('messages.upsert', handleUpsert);
+  sock.ev.on('messages.update', handleUpdates);
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
       lastQr = qr;
@@ -170,10 +166,7 @@ let sendChain = Promise.resolve();
 function queueSend(job) {
   const run = sendChain.then(async () => {
     await new Promise((r) => setTimeout(r, 2000 + Math.random() * 4000));   // never in bursts
-    await sock.sendMessage(WHATSAPP_GROUP_ID, {
-      document: Buffer.from(job.data_b64, 'base64'), mimetype: 'application/pdf',
-      fileName: job.filename || 'quotation.pdf', caption: job.caption || '',
-    });
+    await sock.sendMessage(WHATSAPP_GROUP_ID, buildSendPayload(job));
   });
   sendChain = run.catch(() => {});
   return run;
