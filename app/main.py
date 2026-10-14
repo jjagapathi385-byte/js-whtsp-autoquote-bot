@@ -152,6 +152,10 @@ def create_app(engine=None, start_worker=True, async_events=True):
             rows += (f'<div class="pend"><b>{esc(m.get("sender"))}</b> · due in {left}s<pre>{esc(m["text"])}</pre>'
                      + btn('/admin/cancel', 'Cancel', 'red small', f'<input type="hidden" name="id" value="{esc(m["id"])}">')
                      + btn('/admin/done', 'Done manually', 'grey small', f'<input type="hidden" name="id" value="{esc(m["id"])}">') + '</div>')
+        ist = lambda t: time.strftime('%H:%M:%S', time.gmtime(t + 19800))
+        events = ''.join(f'<div class="pend"><span class="muted">{ist(e["t"])} IST</span> <b>{esc(e["kind"])}</b> '
+                         f'· {esc(e["action"])}<div class="muted">{esc(e["sender"])} · id …{esc(e["id"])} {esc(e["why"])}</div></div>'
+                         for e in list(eng.events)[:12])
         recent = ''.join(f'<div class="pend"><b>{esc(r.get("status"))}</b> · {esc(r.get("sender"))}'
                          f'<div class="muted">{esc(r.get("detail"))}</div></div>' for r in st.recent()[:10])
         body = (f'<h1>JS Auto QuoteBot</h1>'
@@ -164,6 +168,9 @@ def create_app(engine=None, start_worker=True, async_events=True):
                 f'{sw("post_to_group", "Post PDF to WhatsApp group", config.POST_TO_GROUP_DEFAULT)}</div>'
                 f'<div class="card"><h2>Waiting ({len(st.pending_all())})</h2>{rows or "<span class=muted>Nothing waiting.</span>"}</div>'
                 f'<div class="card"><h2>Recent results</h2>{recent or "<span class=muted>None yet.</span>"}</div>'
+                f'<div class="card"><h2>Recent events from WhatsApp</h2>{events or "<span class=muted>None yet.</span>"}'
+                '<div class="muted">What the bot did with each message, edit, delete or attachment (no message text). '
+                'If an edit is missing here, the bridge never sent it.</div></div>'
                 + btn('/admin/logout', 'Log out', 'grey small'))
         return page(body)
 

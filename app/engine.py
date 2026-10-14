@@ -11,6 +11,7 @@ import logging
 import re
 import threading
 import time
+from collections import deque
 
 from . import config, pipeline
 from .intake import classify, extract_codes
@@ -24,6 +25,7 @@ class Engine:
     def __init__(self, store, zoho, deps, now=time.time):
         self.store, self.zoho, self.deps, self.now = store, zoho, deps, now
         self.lock = threading.RLock()          # events, admin actions and timer pickup never interleave
+        self.events = deque(maxlen=40)         # what happened to the last events (no message text), shown in /admin
         self._info = (0, set(), [])
         if getattr(deps, 'now', None) is None:
             deps.now = now
@@ -60,7 +62,11 @@ class Engine:
     # ── events from the bridge ──
     def handle_event(self, ev):
         with self.lock:
-            return self._handle(ev)
+            res = self._handle(ev)
+            self.events.appendleft({'t': self.now(), 'kind': 'attachment' if ev.get('media') else ev.get('event', 'message'),
+                                    'id': str(ev.get('id', ''))[-6:], 'sender': ev.get('sender', ''),
+                                    'action': res.get('action', ''), 'why': res.get('why', '') or res.get('via', '')})
+            return res
 
     def _handle(self, ev):
         if self._is_owner(ev):
@@ -157,6 +163,11 @@ class Engine:
             self._notify(f'⚠️ A message was edited AFTER its quote {info.get("number", "")} was created.\n'
                          f'📝 New text: {ev.get("text")}\nPlease check the quote manually.')
             return {'action': 'edit_after_processed'}
+        # The original was never queued (for example it did not look like a quote yet): the edit may make it one.
+        if (ev.get('text') or '').strip():
+            res = self._on_message(dict(ev, event='message'))
+            res['via'] = 'edit of a message the bot had not queued'
+            return res
         return {'action': 'ignored', 'why': 'unknown message'}
 
     def _on_delete(self, ev):

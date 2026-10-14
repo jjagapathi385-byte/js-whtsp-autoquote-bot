@@ -68,10 +68,9 @@ AI_RETRY_DELAY_SECONDS = int(os.environ.get('AI_RETRY_DELAY_SECONDS', '60'))
 GROQ_REASONING_EFFORT = os.environ.get('GROQ_REASONING_EFFORT', 'low')   # sent only to openai/gpt-oss-* models; '' = do not send
 GROQ_REASONING_HEADROOM = int(os.environ.get('GROQ_REASONING_HEADROOM', '500'))   # extra output tokens reserved for hidden thinking
 
-# When the store was unclear and the DEFAULT customer is used, the PDF caption tags the person who asked for the quote.
+# When the store was unclear and the DEFAULT customer is used, the PDF is posted with ONLY a tag of the person who asked.
 # {user} becomes the sender's id, and the sender is added as a real WhatsApp mention.
-DEFAULT_TAG_CAPTION = os.environ.get('DEFAULT_TAG_CAPTION',
-                                     '@{user} Quotation attached. Please confirm the store name for this quote.')
+DEFAULT_TAG_CAPTION = os.environ.get('DEFAULT_TAG_CAPTION', '@{user}')      # just the tag, no message
 
 # Fixed HSN/SAC codes you trust, applied BEFORE the AI is asked. JSON, keyword in the item name -> code, e.g.
 # {"lock": "83014090", "wire": "85444290", "electrical work": {"code": "995469", "service": true}}
@@ -85,3 +84,6 @@ def _hsn_overrides():
 
 HSN_OVERRIDES = _hsn_overrides()
 GENERIC_HSN = ('99999999', '999999')      # placeholder codes: the owner is told to fix them in Zoho
+
+# Estimate numbers: <ESTIMATE_PREFIX>-<last word of the customer name>-QT-<ascending number>, e.g. JSINT-K240-QT-000666
+ESTIMATE_PREFIX = os.environ.get('ESTIMATE_PREFIX', 'JSINT')

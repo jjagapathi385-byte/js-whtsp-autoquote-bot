@@ -10,7 +10,9 @@ location) but is deterministic first and never guesses:
      confidence, names no alternatives, and its evidence words really appear in the message.
 Anything else returns status 'ambiguous' or 'none' so the caller flags it to Telegram.
 """
+import math
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
@@ -213,7 +215,12 @@ def match_customer(message, ai_name, customers, llm=None, context_brand=None):
         if len(hits) == 1:
             return MatchResult('matched', hits[0], [hits[0]['contact_name']], f'store code {valid[0]}', 'code')
         if len(hits) > 1:
-            return MatchResult('ambiguous', None, [h['contact_name'] for h in hits],
+            # Two Zoho customers share this code (e.g. an old and a new record): the place words decide.
+            top = _top(_rank(header_text(message, ai_name), hits))
+            if len(top) == 1:
+                return MatchResult('matched', top[0], [top[0]['contact_name']],
+                                   f'store code {valid[0]} (shared by {len(hits)} customers; chosen by the place words)', 'code')
+            return MatchResult('ambiguous', None, [h['contact_name'] for h in (top or hits)],
                                f'store code {valid[0]} matches several customers', 'code')
 
     # 2-4. Brand, then location. Brand priority:
@@ -235,13 +242,28 @@ def match_customer(message, ai_name, customers, llm=None, context_brand=None):
     return res
 
 
-def _match_in_pool(header, pool, llm, note=''):
-    scored = sorted(((len(_matched_tokens(header, _cust_tokens(c['contact_name']))), c) for c in pool),
-                    key=lambda x: -x[0])
-    best = scored[0][0] if scored else 0
-    top = [c for s, c in scored if s == best] if best >= 1 else []
+def _rank(header, pool):
+    """[(score, n_matched, customer)] best first. A word that only a few customers have (ELURU) counts more than a
+    word many customers share (VIJAYAWADA), so the candidate lists are short and the right store wins more often."""
+    toks = [_cust_tokens(c['contact_name']) for c in pool]
+    df = Counter(t for tl in toks for t in set(tl))
+    n = max(1, len(pool))
+    out = []
+    for c, tl in zip(pool, toks):
+        hit = _matched_tokens(header, tl)
+        out.append((sum(math.log(1 + n / df[t]) for t in hit), len(hit), c))
+    return sorted(out, key=lambda x: -x[0])
 
-    if best >= 1 and len(top) == 1:
+
+def _top(ranked):
+    best = ranked[0][0] if ranked else 0
+    return [c for sc, _, c in ranked if best > 0 and sc >= best - 1e-9]
+
+
+def _match_in_pool(header, pool, llm, note=''):
+    top = _top(_rank(header, pool))
+
+    if len(top) == 1:
         return MatchResult('matched', top[0], [top[0]['contact_name']], note + 'location words', 'location')
 
     # AI only for no match or a tie, with strict acceptance rules

@@ -1,6 +1,7 @@
 """Zoho Invoice (India, zoho.in) client — adapted from the existing QuoteBot app.py.
 `http` can be injected for tests (anything with get/post/put like `requests`)."""
 import logging
+import re
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -12,6 +13,13 @@ TS_STATES = ['telangana', 'ts', '36-telangana']
 
 class ZohoError(Exception):
     pass
+
+
+def estimate_number(customer_name, seq, prefix=None):
+    """JSINT-K240-QT-000666: prefix, the LAST word of the customer name (usually the store code), QT, ascending number."""
+    last = [w for w in re.split(r'[-\s]+', (customer_name or '').strip()) if w]
+    suffix = re.sub(r'[^A-Za-z0-9_]', '', last[-1]).upper() if last else 'STORE'
+    return f"{prefix or config.ESTIMATE_PREFIX}-{suffix or 'STORE'}-QT-{str(seq).zfill(6)}"
 
 
 class Zoho:
@@ -140,11 +148,10 @@ class Zoho:
 
     def create_estimate(self, customer_id, customer_name, line_items, notes=''):
         """Create the estimate with number CUSTOMERNAME-QT-000XXX. Retries on duplicate numbers."""
-        clean = customer_name.strip().upper().replace(' ', '_')
         result = {}
         for attempt in range(5):
             seq = self.next_seq() + attempt
-            payload = {'customer_id': customer_id, 'estimate_number': f'{clean}-QT-{str(seq).zfill(6)}',
+            payload = {'customer_id': customer_id, 'estimate_number': estimate_number(customer_name, seq),
                        'line_items': line_items}
             default = self.default_notes()
             combined = f'{default}\n{notes.strip()}' if (notes and notes.strip() and default) else \
