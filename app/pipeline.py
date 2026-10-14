@@ -147,7 +147,8 @@ def process_message(msg, d):
 
     # ── live from here ──
     try:
-        hsn = matching.detect_hsn([lines[i]['name'] for i in new_idx], d.llm) if new_idx else {}
+        hsn = (matching.detect_hsn([lines[i]['name'] for i in new_idx], d.llm,
+                                   [lines[i].get('description', '') for i in new_idx]) if new_idx else {})
     except GroqError as e:
         return retry(f'HSN detection: {e}', cname)
     except Exception as e:
@@ -160,7 +161,11 @@ def process_message(msg, d):
                 item_ids.append(matches[i]['item_id'])
             else:
                 h = hsn.get(new_idx.index(i), {})
-                created = d.zoho.create_item(line['name'], h.get('hsn_or_sac', '99999999'), line['rate'],
+                code = h.get('hsn_or_sac', '99999999')
+                if code in config.GENERIC_HSN:      # a placeholder code must never go unnoticed
+                    res['warnings'].append(f"HSN/SAC for '{line['name']}' is the generic placeholder {code}: "
+                                           'please set the right code in Zoho (or add it to HSN_OVERRIDES)')
+                created = d.zoho.create_item(line['name'], code, line['rate'],
                                              tax_id, h.get('is_service', line.get('is_service', False)))
                 item_ids.append(created.get('item_id', ''))
         line_items = Zoho.build_line_items(lines, item_ids, tax_id)
@@ -191,8 +196,14 @@ def process_message(msg, d):
         wa_status = f'PDF fetch failed ({e})'
     if post and pdf and d.bridge:
         try:
-            d.bridge.send_document(f'{number}.pdf', pdf, config.POST_CAPTION)
-            wa_status = 'posted to group'
+            tag = msg.get('sender_jid') if used_default else None       # store unclear: tag the person who asked
+            if tag:
+                user = tag.split(':')[0].split('@')[0]
+                d.bridge.send_document(f'{number}.pdf', pdf, config.DEFAULT_TAG_CAPTION.replace('{user}', user),
+                                       mentions=[tag])
+            else:
+                d.bridge.send_document(f'{number}.pdf', pdf, config.POST_CAPTION)
+            wa_status = 'posted to group' + (' (sender tagged)' if tag else '')
         except Exception as e:
             wa_status = f'FAILED to post ({e}) — please forward manually'
     elif post and not pdf and 'failed' not in wa_status:

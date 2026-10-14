@@ -14,12 +14,12 @@ class Bridge:
     def __init__(self, http=None):
         self.http = http or requests
 
-    def send_document(self, filename, data, caption):
+    def send_document(self, filename, data, caption, mentions=None):
         if not config.BRIDGE_URL or not config.BRIDGE_SECRET:
             raise RuntimeError('BRIDGE_URL / BRIDGE_SECRET not set')
         r = self.http.post(_base(config.BRIDGE_URL) + '/send',
                            headers={'X-Bridge-Secret': config.BRIDGE_SECRET},
-                           json={'filename': filename, 'caption': caption,
+                           json={'filename': filename, 'caption': caption, 'mentions': list(mentions or []),
                                  'data_b64': base64.b64encode(data).decode()}, timeout=60)
         if getattr(r, 'status_code', 200) != 200:
             raise RuntimeError(f'bridge returned {r.status_code}')

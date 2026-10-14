@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
-from . import groq_client
+from . import config, groq_client
 from .aliases import ALIASES
 from .intake import CODE_RE, PRICE_RE, extract_codes, GENERIC_TOKENS
 
@@ -351,13 +351,37 @@ Reply ONLY with a valid JSON array, one entry per input item, in order:
     return result
 
 
-def detect_hsn(item_names, llm=None):
-    """Return {index: {hsn_or_sac, is_service}}. One Groq call for all new items together."""
-    llm = llm or (lambda p: groq_client.chat_json(p, max_tokens=min(900, 80 + 70 * len(item_names)),
-                                                  temperature=0, expect=list))
+def _override_for(name):
+    n = (name or '').lower()
+    for kw, val in config.HSN_OVERRIDES.items():
+        if kw and kw in n:
+            if isinstance(val, dict):
+                return {'hsn_or_sac': str(val.get('code', '')), 'is_service': bool(val.get('service', False))}
+            return {'hsn_or_sac': str(val), 'is_service': False}
+    return None
+
+
+def detect_hsn(item_names, llm=None, contexts=None):
+    """Return {index: {hsn_or_sac, is_service}}.
+    1. codes you set in HSN_OVERRIDES are used as they are (no AI);
+    2. everything else goes to ONE Groq call, which also sees what a supply line includes (`contexts`).
+    A failure is raised (the caller retries), never a wrong code."""
     if not item_names:
         return {}
-    numbered = '\n'.join(f'{i+1}. {n}' for i, n in enumerate(item_names))
+    result, ask = {}, []
+    for i, name in enumerate(item_names):
+        ov = _override_for(name)
+        if ov and ov['hsn_or_sac']:
+            result[i] = ov
+        else:
+            ask.append(i)
+    if not ask:
+        return result
+    llm = llm or (lambda p: groq_client.chat_json(p, max_tokens=min(900, 80 + 70 * len(ask)),
+                                                  temperature=0, expect=list))
+    contexts = contexts or [''] * len(item_names)
+    numbered = '\n'.join(
+        f"{k+1}. {item_names[i]}" + (f" (includes: {contexts[i][:200]})" if contexts[i] else '') for k, i in enumerate(ask))
     prompt = f"""You are an Indian GST expert. For each item below, provide the correct HSN code (for goods) or SAC code (for services).
 
 Items:
@@ -386,14 +410,14 @@ Rules:
    Maintenance/repair service -> 995469, service
    Labour charges -> 995511, service
    Security service -> 998523, service
-3. If genuinely unsure -> HSN 99999999 for goods, SAC 999999 for services.
+3. Always give the most likely REAL code for what the item is. For a supply of mixed goods (the "includes" list), use
+   the HSN of the main item. Use 99999999 (goods) / 999999 (services) ONLY if the item cannot be identified at all.
 
 Reply ONLY with a valid JSON array. No markdown, no explanation, nothing else:
 [{{"item": 1, "hsn_or_sac": "94054090", "is_service": false}}]"""
-    result = {}
     for entry in llm(prompt):                        # a failure is raised: the caller retries, never a wrong HSN
-        idx = int(entry.get('item', 0)) - 1
-        if idx >= 0:
-            result[idx] = {'hsn_or_sac': str(entry.get('hsn_or_sac', '99999999')),
-                           'is_service': bool(entry.get('is_service', False))}
+        k = int(entry.get('item', 0)) - 1
+        if 0 <= k < len(ask):
+            result[ask[k]] = {'hsn_or_sac': str(entry.get('hsn_or_sac', '99999999')),
+                              'is_service': bool(entry.get('is_service', False))}
     return result

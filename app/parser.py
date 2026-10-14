@@ -23,9 +23,10 @@ JSON shape:
 Rules:
 1. customer_name: the store/customer from the header (keep the store code and place words).
 2. email: every email address found, comma separated, else "".
-3. items: one per line of work/material. name = corrected proper English (fix typos: "magnitor" -> "Magnetron",
-   "Bolyer moter repair" -> "Boiler Motor Repair"); keep sizes inside the name ("50mm cable", "2.5 sq mm wire");
-   never put a quantity or a length in the name.
+3. items: one per line of work/material, INCLUDING lines that have no price (unit_price 0). name = corrected proper
+   English (fix typos: "magnitor" -> "Magnetron", "Bolyer moter repair" -> "Boiler Motor Repair", "heate slevs" ->
+   "Heater Sleeves"); keep sizes inside the name ("50mm cable", "2.5 sq mm wire"); never put a quantity or a length
+   in the name.
    - line_total = the amount printed on that line. A price stuck to the name ("scolding7500") must be split.
    - Counted pieces (no, nos, pcs, sets, bags, rolls, boxes, or "2*650"): quantity = pieces, unit_price = line_total / quantity.
    - Lengths, weights, volumes (meters, mtrs, ft, kg, litre, L, ml): quantity = 1 and unit_price = line_total (never divide).
@@ -80,11 +81,27 @@ def _best_segment(name, segments, used):
     return ''
 
 
+def _fallback_items(message):
+    """Only used when the AI returned NO items although the message lists lines and gives a total: the listed
+    lines become unpriced items, so the quote's line description still says what the total covers."""
+    from .intake import BRAND_RE, CODE_RE, STORE_WORD_RE
+    skip = re.compile(r'(total|tot\.?\s*amount|\bamount\b|\bcost\b|quot|quat|question|kindly|please|urgent|asap|advance|@|mail|^work\b|^store\b)', re.I)
+    out = []
+    for seg in _segments(message):
+        if skip.search(seg) or BRAND_RE.search(seg) or CODE_RE.search(seg) or STORE_WORD_RE.search(seg):
+            continue
+        if re.search(r'[A-Za-z]{3}', seg):
+            out.append(seg.strip())
+    return out if 2 <= len(out) <= 12 else []
+
+
 def _enrich(items, message):
     """Add raw_line, unit_type, measure_text and listed_as (used by rules.py) without asking the AI for them."""
     from .rules import MEASURE_RE
     segs, used = _segments(message), set()
     for it in items:
+        cleaned = re.sub(r'\s+', ' ', _QTY.sub(' ', MEASURE_RE.sub(' ', it['name']))).strip(' -:.,')
+        it['name'] = cleaned or it['name']            # "2 Meter Heater Sleeves" -> "Heater Sleeves" (the length is added once below)
         raw = _best_segment(it['name'], segs, used)
         it['raw_line'] = raw
         m = MEASURE_RE.search(raw)
@@ -120,11 +137,15 @@ def parse_message(message, **groq_kwargs):
             line_total=_num(it.get('line_total')),
             is_service=bool(it.get('is_service', False)),
         ))
+    total = _num(data.get('stated_total'))
+    if not items and total > 0:
+        items = [dict(name=n.title(), quantity=1.0, unit_price=0.0, line_total=0.0, is_service=False)
+                 for n in _fallback_items(msg)]
     return dict(
         customer_name=str(data.get('customer_name', '')).strip(),
         email=str(data.get('email', '') or '').strip(),
         notes=str(data.get('notes', '') or '').strip(),
-        stated_total=_num(data.get('stated_total')),
+        stated_total=total,
         work_description=str(data.get('work_description', '') or '').strip(),
         items=_enrich(items, msg),
     )

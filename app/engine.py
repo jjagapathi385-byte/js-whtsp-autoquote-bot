@@ -87,7 +87,7 @@ class Engine:
 
     def _schedule(self, ev, cls):
         self._record_brand(ev, cls)
-        msg = {'id': ev['id'], 'sender': ev.get('sender', ''), 'text': ev['text'], 'ts': float(ev['ts']),
+        msg = {'id': ev['id'], 'sender': ev.get('sender', ''), 'sender_jid': ev.get('sender_jid', ''), 'text': ev['text'], 'ts': float(ev['ts']),
                'due': float(ev['ts']) + config.TIMER_SECONDS, 'is_forwarded': bool(ev.get('is_forwarded')),
                'intake_action': cls.action, 'intake_reasons': cls.reasons, 'default_ok': cls.default_ok}
         self.store.add_pending(msg)

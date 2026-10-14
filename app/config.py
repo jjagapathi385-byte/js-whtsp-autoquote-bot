@@ -1,4 +1,5 @@
 """Settings for JS Automatic QuoteBot (non-secret defaults + env overrides)."""
+import json
 import os
 
 MARKUP = float(os.environ.get('MARKUP', '1.10'))            # 10% markup, same as existing QuoteBot
@@ -66,3 +67,21 @@ MAX_AI_RETRIES = int(os.environ.get('MAX_AI_RETRIES', '3'))      # a message is 
 AI_RETRY_DELAY_SECONDS = int(os.environ.get('AI_RETRY_DELAY_SECONDS', '60'))
 GROQ_REASONING_EFFORT = os.environ.get('GROQ_REASONING_EFFORT', 'low')   # sent only to openai/gpt-oss-* models; '' = do not send
 GROQ_REASONING_HEADROOM = int(os.environ.get('GROQ_REASONING_HEADROOM', '500'))   # extra output tokens reserved for hidden thinking
+
+# When the store was unclear and the DEFAULT customer is used, the PDF caption tags the person who asked for the quote.
+# {user} becomes the sender's id, and the sender is added as a real WhatsApp mention.
+DEFAULT_TAG_CAPTION = os.environ.get('DEFAULT_TAG_CAPTION',
+                                     '@{user} Quotation attached. Please confirm the store name for this quote.')
+
+# Fixed HSN/SAC codes you trust, applied BEFORE the AI is asked. JSON, keyword in the item name -> code, e.g.
+# {"lock": "83014090", "wire": "85444290", "electrical work": {"code": "995469", "service": true}}
+def _hsn_overrides():
+    try:
+        raw = json.loads(os.environ.get('HSN_OVERRIDES', '') or '{}')
+        return {str(k).lower(): v for k, v in raw.items()} if isinstance(raw, dict) else {}
+    except ValueError:
+        return {}
+
+
+HSN_OVERRIDES = _hsn_overrides()
+GENERIC_HSN = ('99999999', '999999')      # placeholder codes: the owner is told to fix them in Zoho
