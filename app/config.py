@@ -36,7 +36,6 @@ BRIDGE_SECRET = os.environ.get('BRIDGE_SECRET', '')          # shared secret wit
 BRIDGE_URL = os.environ.get('BRIDGE_URL', '')                # where Flask sends PDFs for the group
 POLL_SECONDS = int(os.environ.get('POLL_SECONDS', '15'))     # due-timer check; 15s keeps Upstash usage low
 HEARTBEAT_ALERT_SECONDS = 300                                # alert if the bridge is silent this long
-POST_CAPTION = os.environ.get('POST_CAPTION', 'Quotation attached.')
 
 # Brand carry-over: a store named without KFC/PHD uses the brand the same sender used recently
 BRAND_CONTEXT_SECONDS = int(os.environ.get('BRAND_CONTEXT_SECONDS', str(3 * 3600)))
@@ -68,9 +67,10 @@ AI_RETRY_DELAY_SECONDS = int(os.environ.get('AI_RETRY_DELAY_SECONDS', '60'))
 GROQ_REASONING_EFFORT = os.environ.get('GROQ_REASONING_EFFORT', 'low')   # sent only to openai/gpt-oss-* models; '' = do not send
 GROQ_REASONING_HEADROOM = int(os.environ.get('GROQ_REASONING_HEADROOM', '500'))   # extra output tokens reserved for hidden thinking
 
-# When the store was unclear and the DEFAULT customer is used, the PDF is posted with ONLY a tag of the person who asked.
-# {user} becomes the sender's id, and the sender is added as a real WhatsApp mention.
-DEFAULT_TAG_CAPTION = os.environ.get('DEFAULT_TAG_CAPTION', '@{user}')      # just the tag, no message
+# Caption of the quote PDF posted in the group, for EVERY quote. {user} = the sender (a real WhatsApp tag),
+# {customer} = the customer name (when the store was unclear: the store name as written in the message),
+# {number} = the estimate number. Example: '@{user} {customer}' -> '@Ravi KFC-CMR-VIZAG-MA-VSK-K215'.
+CAPTION_TEMPLATE = os.environ.get('CAPTION_TEMPLATE', '@{user} {customer}')
 
 # Fixed HSN/SAC codes you trust, applied BEFORE the AI is asked. JSON, keyword in the item name -> code, e.g.
 # {"lock": "83014090", "wire": "85444290", "electrical work": {"code": "995469", "service": true}}

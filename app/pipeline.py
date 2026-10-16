@@ -196,14 +196,14 @@ def process_message(msg, d):
         wa_status = f'PDF fetch failed ({e})'
     if post and pdf and d.bridge:
         try:
-            tag = msg.get('sender_jid') if used_default else None       # store unclear: tag the person who asked
-            if tag:
-                user = tag.split(':')[0].split('@')[0]
-                d.bridge.send_document(f'{number}.pdf', pdf, config.DEFAULT_TAG_CAPTION.replace('{user}', user),
-                                       mentions=[tag])
-            else:
-                d.bridge.send_document(f'{number}.pdf', pdf, config.POST_CAPTION)
-            wa_status = 'posted to group' + (' (sender tagged)' if tag else '')
+            tag = msg.get('sender_jid') or None                          # tag the person who asked, on every quote
+            user = tag.split(':')[0].split('@')[0] if tag else ''
+            shown = (name_in_message[:80] or cname) if used_default else cname   # unclear store: the name as written
+            caption = (config.CAPTION_TEMPLATE.replace('{customer}', shown).replace('{number}', number)
+                       .replace('@{user}', f'@{user}' if user else '').replace('{user}', user))
+            caption = re.sub(r'\s+', ' ', caption).strip()
+            d.bridge.send_document(f'{number}.pdf', pdf, caption, mentions=[tag] if tag else None)
+            wa_status = 'posted to group' + (' (sender tagged)' if tag else ' (sender could not be tagged)')
         except Exception as e:
             wa_status = f'FAILED to post ({e}) — please forward manually'
     elif post and not pdf and 'failed' not in wa_status:
