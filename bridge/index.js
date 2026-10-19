@@ -34,7 +34,9 @@ const CONTACTS_FILE = path.join(path.dirname(AUTH_DIR), 'contacts.json');
 try { book.load(JSON.parse(fs.readFileSync(CONTACTS_FILE, 'utf8'))); say('contacts loaded:', book.size); } catch { /* first run */ }
 let saveTimer = null;
 function ingestContacts(list) {
-  if (!book.ingest(list)) return;
+  const n = book.ingest(list);
+  say('contacts event:', (list || []).length, 'entries,', n, 'with a saved name; total known:', book.size);
+  if (!n) return;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => { try { fs.mkdirSync(path.dirname(CONTACTS_FILE), { recursive: true }); fs.writeFileSync(CONTACTS_FILE, JSON.stringify(book)); } catch (e) { say('could not save contacts:', e.message); } }, 5000);
 }
@@ -157,9 +159,18 @@ async function start() {
     }
     if (connection === 'open') {
       connected = true; lastQr = null; say('WhatsApp connected');
-      if (process.env.RESYNC_CONTACTS === '1') {                  // one-time: ask the phone for the address book again
-        try { await sock.resyncAppState(['critical_unblock_low'], true); } catch (e) { say('contact resync failed:', e.message); }
-        setTimeout(() => say('saved contact names known:', book.size), 30000);
+      if (process.env.RESYNC_CONTACTS) {                          // one-time: fetch the saved contact names from the phone
+        const hard = process.env.RESYNC_CONTACTS === 'hard';
+        try {
+          if (hard) {
+            // Forget only the local "how far have I synced" record of the contacts collection (NOT the login).
+            // With no record, WhatsApp sends the complete address book again, like on a first link.
+            await sock.authState.keys.set({ 'app-state-sync-version': { critical_unblock_low: null } });
+            say('contact sync position cleared (you stay linked); asking WhatsApp for the full address book');
+          }
+          await sock.resyncAppState(['critical_unblock_low'], true);
+        } catch (e) { say('contact resync failed:', e.message); }
+        setTimeout(() => say('saved contact names known:', book.size), 45000);
       }
       if (!WHATSAPP_GROUP_ID) await listGroups();
       else say('Watching group', WHATSAPP_GROUP_ID);
