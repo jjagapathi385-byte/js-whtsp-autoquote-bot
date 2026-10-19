@@ -60,3 +60,33 @@ export function buildSendPayload(job) {
   if (mentions.length) payload.mentions = mentions;
   return payload;
 }
+
+// Saved contact names ("KFC Supervisor Ravi") as the phone's address book gives them to a linked device.
+// Looked up by every id form WhatsApp uses (phone number id, LID), device suffixes ignored.
+export class ContactBook {
+  constructor() { this.names = new Map(); }
+  static key(id) { return (id || '').split('@')[0].split(':')[0]; }
+  ingest(list) {
+    let n = 0;
+    for (const c of list || []) {
+      const name = (c.name || '').trim();
+      if (!name) continue;                                   // only SAVED names; push names are not used here
+      for (const id of [c.id, c.lid, c.phoneNumber]) {
+        const k = ContactBook.key(id);
+        if (k) this.names.set(k, name);
+      }
+      n++;
+    }
+    return n;
+  }
+  lookup(...ids) {
+    for (const id of ids) {
+      const k = ContactBook.key(id);
+      if (k && this.names.has(k)) return this.names.get(k);
+    }
+    return '';
+  }
+  load(obj) { for (const [k, v] of Object.entries(obj || {})) this.names.set(k, v); }
+  toJSON() { return Object.fromEntries(this.names); }
+  get size() { return this.names.size; }
+}

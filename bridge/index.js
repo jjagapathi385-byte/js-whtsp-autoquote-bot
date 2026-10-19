@@ -6,7 +6,9 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import qrcodeTerminal from 'qrcode-terminal';
-import { toNum, digits, unwrap, textOf, senderInfo, updateToEvent, buildSendPayload } from './events.js';
+import { toNum, digits, unwrap, textOf, senderInfo, updateToEvent, buildSendPayload, ContactBook } from './events.js';
+import fs from 'node:fs';
+import path from 'node:path';
 import QRCode from 'qrcode';
 import crypto from 'node:crypto';
 import http from 'node:http';
@@ -27,6 +29,15 @@ const log = pino({ level: 'warn' });
 const say = (...a) => console.log(new Date().toISOString(), ...a);
 let sock = null;
 let connected = false;
+const book = new ContactBook();                 // saved contact names, kept on the volume so a restart does not lose them
+const CONTACTS_FILE = path.join(path.dirname(AUTH_DIR), 'contacts.json');
+try { book.load(JSON.parse(fs.readFileSync(CONTACTS_FILE, 'utf8'))); say('contacts loaded:', book.size); } catch { /* first run */ }
+let saveTimer = null;
+function ingestContacts(list) {
+  if (!book.ingest(list)) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => { try { fs.mkdirSync(path.dirname(CONTACTS_FILE), { recursive: true }); fs.writeFileSync(CONTACTS_FILE, JSON.stringify(book)); } catch (e) { say('could not save contacts:', e.message); } }, 5000);
+}
 let lastQr = null;           // newest QR text, served at /qr while linking
 let pairingRequested = false;
 
@@ -65,7 +76,7 @@ function handleUpsert({ messages, type }) {
 
       const pm = m.protocolMessage;
       const senderJid = key.participant || '';
-      const base = senderInfo(key, msg.pushName);
+      const base = { ...senderInfo(key, msg.pushName), contact_name: book.lookup(senderJid, key.participantAlt) };
       if (pm) {                                                     // delete / edit of an earlier message
         const t = pm.type;
         const target = pm.key?.id;
@@ -103,7 +114,7 @@ function handleUpdates(updates) {
       if (DEBUG) say('update', 'jid=' + upd?.key?.remoteJid, 'id=' + upd?.key?.id, 'keys=' + Object.keys(upd?.update || {}).join('|'),
         'stub=' + (upd?.update?.messageStubType ?? '-'));
       const ev = updateToEvent(upd, WHATSAPP_GROUP_ID, Math.floor(Date.now() / 1000));
-      if (ev) { say('forwarding', ev.event, 'of message', ev.id); post('/incoming', ev); }
+      if (ev) { ev.contact_name = book.lookup(ev.sender_jid, upd.key?.participantAlt); say('forwarding', ev.event, 'of message', ev.id); post('/incoming', ev); }
     } catch (e) { say('update handling error:', e.message); }
   }
 }
@@ -128,6 +139,9 @@ async function start() {
   sock.ev.on('creds.update', saveCreds);
   sock.ev.on('messages.upsert', handleUpsert);
   sock.ev.on('messages.update', handleUpdates);
+  sock.ev.on('contacts.upsert', ingestContacts);
+  sock.ev.on('contacts.update', ingestContacts);
+  sock.ev.on('messaging-history.set', ({ contacts }) => ingestContacts(contacts));
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
       lastQr = qr;
@@ -143,6 +157,10 @@ async function start() {
     }
     if (connection === 'open') {
       connected = true; lastQr = null; say('WhatsApp connected');
+      if (process.env.RESYNC_CONTACTS === '1') {                  // one-time: ask the phone for the address book again
+        try { await sock.resyncAppState(['critical_unblock_low'], true); } catch (e) { say('contact resync failed:', e.message); }
+        setTimeout(() => say('saved contact names known:', book.size), 30000);
+      }
       if (!WHATSAPP_GROUP_ID) await listGroups();
       else say('Watching group', WHATSAPP_GROUP_ID);
     }
