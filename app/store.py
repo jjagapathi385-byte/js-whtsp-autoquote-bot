@@ -24,6 +24,7 @@ class Store:
         self._due = None        # message id -> due time (mirror of the Redis sorted set; loaded lazily)
         self._hb = 0.0          # bridge heartbeat: memory only (nothing worth persisting)
         self._alerted = False
+        self._sbrands = None    # sender key -> brand assigned in /admin (loaded once)
 
     # ── cached single values ──
     def _get(self, key):
@@ -133,3 +134,21 @@ class Store:
 
     def recent(self):
         return json.loads(self.r.get('recent') or '[]')
+
+    # ── brand assigned to a sender in /admin (e.g. a "PHD supervisor"), used when the message names no brand ──
+    def sender_brands(self):
+        if self._sbrands is None:
+            self._sbrands = json.loads(self.r.get('sender_brands') or '{}')
+        return dict(self._sbrands)
+
+    def sender_brand(self, key):
+        return self.sender_brands().get(key) if key else None
+
+    def set_sender_brand(self, key, brand):
+        m = self.sender_brands()
+        if brand:
+            m[key] = brand
+        else:
+            m.pop(key, None)
+        self.r.set('sender_brands', json.dumps(m))
+        self._sbrands = m

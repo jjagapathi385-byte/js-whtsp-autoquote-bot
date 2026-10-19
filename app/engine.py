@@ -49,6 +49,17 @@ class Engine:
         return sorted([m for m in self.store.pending_all() if m.get('sender') == sender], key=lambda m: m['ts'])
 
     @staticmethod
+    def label(contact, sender):
+        """'Srinivas KFC Supervisor (D Srinivas)': the name saved in the phone first, the profile name in brackets."""
+        return f'{contact} ({sender})' if contact and contact != sender else (sender or contact or '')
+
+    @staticmethod
+    def sender_key(ev):
+        """Stable id of a sender: the user part of the WhatsApp id (number or LID), else the phone number, else the name."""
+        jid = str(ev.get('sender_jid') or '').split('@')[0].split(':')[0]
+        return jid or re.sub(r'\D', '', str(ev.get('sender_number') or '')) or str(ev.get('sender') or '')
+
+    @staticmethod
     def _is_owner(ev):
         """My own number is ignored. Matched by phone number (last 10 digits) or, because WhatsApp groups
         sometimes hide numbers behind an internal id (LID), by the exact sender id in OWNER_JIDS."""
@@ -65,6 +76,7 @@ class Engine:
             res = self._handle(ev)
             self.events.appendleft({'t': self.now(), 'kind': 'attachment' if ev.get('media') else ev.get('event', 'message'),
                                     'id': str(ev.get('id', ''))[-6:], 'sender': ev.get('sender', ''),
+                                    'key': self.sender_key(ev), 'contact': ev.get('contact_name', ''),
                                     'action': res.get('action', ''), 'why': res.get('why', '') or res.get('via', '')})
             return res
 
@@ -95,7 +107,8 @@ class Engine:
         self._record_brand(ev, cls)
         msg = {'id': ev['id'], 'sender': ev.get('sender', ''), 'sender_jid': ev.get('sender_jid', ''), 'text': ev['text'], 'ts': float(ev['ts']),
                'due': float(ev['ts']) + config.TIMER_SECONDS, 'is_forwarded': bool(ev.get('is_forwarded')),
-               'intake_action': cls.action, 'intake_reasons': cls.reasons, 'default_ok': cls.default_ok}
+               'intake_action': cls.action, 'intake_reasons': cls.reasons, 'default_ok': cls.default_ok,
+               'sender_key': self.sender_key(ev), 'contact_name': ev.get('contact_name', '')}
         self.store.add_pending(msg)
         return {'action': 'scheduled', 'id': ev['id'], 'due': msg['due']}
 
@@ -204,7 +217,7 @@ class Engine:
                              f'📝 {msg.get("text")}\nError: {e}')
                 res = {'status': 'error', 'error': str(e)}
             results.append(res)
-            self.store.add_recent({'ts': self.now(), 'sender': msg.get('sender'), 'status': res.get('status'),
+            self.store.add_recent({'ts': self.now(), 'sender': self.label(msg.get('contact_name'), msg.get('sender')), 'status': res.get('status'),
                                    'detail': res.get('number') or res.get('customer') or '; '.join(res.get('issues', [])) or res.get('error', ''),
                                    'text': (msg.get('text') or '')[:120]})
         return results

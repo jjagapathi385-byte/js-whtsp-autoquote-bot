@@ -41,12 +41,13 @@ def _emails(parsed, text):
 
 def process_message(msg, d):
     text, sender = msg['text'], msg.get('sender', '')
+    who = f"{msg['contact_name']} ({sender})" if msg.get('contact_name') and msg['contact_name'] != sender else sender   # for Telegram
     dry = d.store.flag('dry_run', config.DRY_RUN_DEFAULT)
     post = d.store.flag('post_to_group', config.POST_TO_GROUP_DEFAULT)
     clock = d.now or time.time
 
     def flag(issues, store='unknown'):
-        d.notify(notify.quote_flagged(sender, store, issues, text, dry_run=dry))
+        d.notify(notify.quote_flagged(who, store, issues, text, dry_run=dry))
         return {'status': 'flagged', 'issues': issues}
 
     def retry(reason, store='unknown'):
@@ -74,10 +75,15 @@ def process_message(msg, d):
 
     # 2. customer: code first (parsed name, then raw message), brand, location, strict AI
     ctx = d.store.brand_context(sender, msg.get('ts', 0), config.BRAND_CONTEXT_SECONDS) if sender else None
+    # Brand of the SENDER, used only when the message names no brand and has no store code:
+    # assigned in /admin > saved contact name ("PHD Supervisor Ravi") > the sender's own profile name.
+    sender_brand = (d.store.sender_brand(msg.get('sender_key', '')) or matching.brand_from_name(msg.get('contact_name'))
+                    or matching.brand_from_name(sender))
     customers = d.zoho.customers()
     default_name = config.DEFAULT_CUSTOMER_NAME.strip().lower()
     pool = [c for c in customers if c['contact_name'].strip().lower() != default_name]   # never a match target
-    mr = matching.match_customer(text, parsed.get('customer_name', ''), pool, d.llm, context_brand=ctx)
+    mr = matching.match_customer(text, parsed.get('customer_name', ''), pool, d.llm, context_brand=ctx,
+                                 sender_brand=sender_brand)
     name_in_message = (parsed.get('customer_name') or matching.header_text(text)).strip()
     used_default, unclear = False, ''
     if mr.status == 'matched':
@@ -110,7 +116,8 @@ def process_message(msg, d):
         res['warnings'].insert(0, f'DEFAULT CUSTOMER USED — store unclear: {unclear}. Name in message: {name_in_message}')
     notes = '\n'.join(x for x in parts if x)
     if mr.assumed_brand:
-        res['warnings'].append(f'Brand {mr.assumed_brand} was assumed from this sender\'s earlier message — please verify')
+        src = "the sender's contact name" if mr.assumed_source == 'sender' else "this sender's earlier message"
+        res['warnings'].append(f'Brand {mr.assumed_brand} was assumed from {src} — please verify')
     lines = res['lines']
     subtotal = round(sum(l['quantity'] * l['rate'] for l in lines), 2)
 
@@ -141,7 +148,7 @@ def process_message(msg, d):
         warnings = list(res['warnings'])
         if new_idx:
             warnings.append('New Zoho items would be created: ' + ', '.join(lines[i]['name'] for i in new_idx))
-        d.notify(notify.dry_run_preview(sender, cname, res['mode'], lines, res['item_sum'],
+        d.notify(notify.dry_run_preview(who, cname, res['mode'], lines, res['item_sum'],
                                         res['stated_total'], ', '.join(emails), warnings))
         return {'status': 'dry_run', 'customer': cname, 'lines': lines}
 
@@ -209,6 +216,6 @@ def process_message(msg, d):
     elif post and not pdf and 'failed' not in wa_status:
         wa_status = 'PDF not available — please forward manually'
 
-    txt = notify.quote_created(number, cname, sender, email_status, res['warnings'])
+    txt = notify.quote_created(number, cname, who, email_status, res['warnings'])
     d.notify(txt + f'\n💬 WhatsApp: {wa_status}')
     return {'status': 'created', 'number': number, 'customer': cname, 'email': email_status, 'whatsapp': wa_status}

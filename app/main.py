@@ -15,6 +15,7 @@ from flask import Flask, abort, jsonify, redirect, render_template_string, reque
 from . import config, notify
 from .bridge_client import Bridge
 from .engine import Engine
+from .matching import brand_from_name
 from .pipeline import Deps
 from .store import Store, connect
 from .zoho import Zoho
@@ -149,13 +150,33 @@ def create_app(engine=None, start_worker=True, async_events=True):
         rows = ''
         for m in st.pending_all():
             left = max(0, int(m['due'] - time.time()))
-            rows += (f'<div class="pend"><b>{esc(m.get("sender"))}</b> · due in {left}s<pre>{esc(m["text"])}</pre>'
+            rows += (f'<div class="pend"><b>{esc(eng.label(m.get("contact_name"), m.get("sender")))}</b> · due in {left}s<pre>{esc(m["text"])}</pre>'
                      + btn('/admin/cancel', 'Cancel', 'red small', f'<input type="hidden" name="id" value="{esc(m["id"])}">')
                      + btn('/admin/done', 'Done manually', 'grey small', f'<input type="hidden" name="id" value="{esc(m["id"])}">') + '</div>')
         ist = lambda t: time.strftime('%H:%M:%S', time.gmtime(t + 19800))
         events = ''.join(f'<div class="pend"><span class="muted">{ist(e["t"])} IST</span> <b>{esc(e["kind"])}</b> '
                          f'· {esc(e["action"])}<div class="muted">{esc(e["sender"])} · id …{esc(e["id"])} {esc(e["why"])}</div></div>'
                          for e in list(eng.events)[:12])
+        seen = {}
+        for e in eng.events:
+            if e['key'] and e['kind'] == 'message' and e['key'] not in seen:
+                seen[e['key']] = e
+        for k in st.sender_brands():
+            seen.setdefault(k, {'key': k, 'sender': k, 'contact': ''})
+        brand_rows = ''
+        for k, e in list(seen.items())[:20]:
+            manual = st.sender_brand(k)
+            auto = brand_from_name(e.get('contact')) or brand_from_name(e.get('sender'))
+            cur = manual or auto
+            label = (f'{cur} ({"assigned here" if manual else "from the contact name"})' if cur else 'no brand known')
+            who = esc(e.get('contact') or e.get('sender') or k)
+            hid = f'<input type="hidden" name="key" value="{esc(k)}">'
+            brand_rows += (f'<div class="pend"><b>{who}</b> <span class="muted">{esc(e.get("sender") if e.get("contact") else "")}</span>'
+                           f'<div class="muted">{label}</div>'
+                           + btn('/admin/sender-brand', 'KFC', 'small', hid + '<input type="hidden" name="brand" value="KFC">')
+                           + btn('/admin/sender-brand', 'PHD', 'small', hid + '<input type="hidden" name="brand" value="PHD">')
+                           + btn('/admin/sender-brand', 'Costa', 'small', hid + '<input type="hidden" name="brand" value="COSTA">')
+                           + btn('/admin/sender-brand', 'Clear', 'grey small', hid + '<input type="hidden" name="brand" value="">') + '</div>')
         recent = ''.join(f'<div class="pend"><b>{esc(r.get("status"))}</b> · {esc(r.get("sender"))}'
                          f'<div class="muted">{esc(r.get("detail"))}</div></div>' for r in st.recent()[:10])
         body = (f'<h1>JS Auto QuoteBot</h1>'
@@ -167,6 +188,9 @@ def create_app(engine=None, start_worker=True, async_events=True):
                 f'<div class="card"><h2>Switches</h2>{sw("dry_run", "Dry run (nothing created)", config.DRY_RUN_DEFAULT)}'
                 f'{sw("post_to_group", "Post PDF to WhatsApp group", config.POST_TO_GROUP_DEFAULT)}</div>'
                 f'<div class="card"><h2>Waiting ({len(st.pending_all())})</h2>{rows or "<span class=muted>Nothing waiting.</span>"}</div>'
+                f'<div class="card"><h2>Who sends which brand</h2>{brand_rows or "<span class=muted>Senders appear here after they post.</span>"}'
+                '<div class="muted">Used ONLY when a message names no brand (KFC / PHD) and has no store code. '
+                'A brand shown "from the contact name" comes from the name saved in your phone.</div></div>'
                 f'<div class="card"><h2>Recent results</h2>{recent or "<span class=muted>None yet.</span>"}</div>'
                 f'<div class="card"><h2>Recent events from WhatsApp</h2>{events or "<span class=muted>None yet.</span>"}'
                 '<div class="muted">What the bot did with each message, edit, delete or attachment (no message text). '
@@ -212,6 +236,18 @@ def create_app(engine=None, start_worker=True, async_events=True):
         if name not in ('dry_run', 'post_to_group'):
             abort(400)
         eng.store.set_flag(name, request.form.get('value') == '1')
+        return redirect('/admin')
+
+    @app.post('/admin/sender-brand')
+    def sender_brand():
+        guard()
+        brand = request.form.get('brand', '')
+        if brand not in ('KFC', 'PHD', 'COSTA', 'VAANGO', ''):
+            abort(400)
+        key = request.form.get('key', '').strip()
+        if not key:
+            abort(400)
+        eng.store.set_sender_brand(key, brand)
         return redirect('/admin')
 
     @app.post('/admin/cancel')

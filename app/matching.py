@@ -36,7 +36,8 @@ class MatchResult:
     candidates: list = field(default_factory=list)   # customer names, for the Telegram alert
     reason: str = ''
     method: str = ''                 # code | location | ai
-    assumed_brand: str = ''          # set when the brand came from the sender's earlier message
+    assumed_brand: str = ''          # set when the brand was not in the message (from the sender's contact or earlier message)
+    assumed_source: str = ''         # 'sender' (contact name / assigned) or 'context' (earlier message)
     ai_failed: bool = False          # the AI could not be reached while deciding (caller retries later)
 
 
@@ -58,7 +59,7 @@ def detect_brand(text, code=None):
     up = (text or '').upper()
     if 'KFC' in up:
         return 'KFC'
-    if any(b in up for b in ['PHD', 'PIZZA HUT', 'PIZZAHUT', 'PH ']):
+    if re.search(r'PHD|PIZZA\s*HUT|PIZZAHUT|\bPH\b', up):      # \bPH\b: not the "ph" inside "Joseph "
         return 'PHD'
     if 'COSTA' in up:
         return 'COSTA'
@@ -83,6 +84,20 @@ def customer_brand(name):
         return 'VAANGO'
     m = re.search(r'(?:^|-)([KYPZCV])\d{3,4}(?=-|$)', up)
     return BRAND_PREFIXES.get(m.group(1)) if m else None
+
+
+def brand_from_name(name):
+    """Brand named in a person's contact / profile name ("KFC Supervisor Ravi", "Pizza Hut - Suresh"), else None."""
+    t = name or ''
+    if re.search(r'\bkfc\b', t, re.I):
+        return 'KFC'
+    if re.search(r'\b(phd|pizza\s*hut|pizzahut|ph)\b', t, re.I):
+        return 'PHD'
+    if re.search(r'\bcosta\b', t, re.I):
+        return 'COSTA'
+    if re.search(r'\bvaango\b', t, re.I):
+        return 'VAANGO'
+    return None
 
 
 def brand_filter(customers, brand):
@@ -188,7 +203,7 @@ Rules:
     return llm(prompt)
 
 
-def match_customer(message, ai_name, customers, llm=None, context_brand=None):
+def match_customer(message, ai_name, customers, llm=None, context_brand=None, sender_brand=None):
     """Return a MatchResult. `llm(prompt)` returns the parsed JSON (defaults to Groq).
     `context_brand`: brand from the same sender's earlier message (used only when this message has no
     brand word and no store code)."""
@@ -228,16 +243,18 @@ def match_customer(message, ai_name, customers, llm=None, context_brand=None):
     header = header_text(message, ai_name)
     explicit = detect_brand(header, (valid or codes or [None])[0])
     if explicit:
-        order = [explicit]
+        order = [(explicit, '')]
+    elif sender_brand:
+        order = [(sender_brand, 'sender')]       # known from the sender's contact name: strict, never falls back to another brand
     else:
-        order = ([context_brand] if context_brand else []) + (['KFC'] if context_brand != 'KFC' else [])
+        order = ([(context_brand, 'context')] if context_brand else []) + ([('KFC', '')] if context_brand != 'KFC' else [])
     res = None
-    for b in order:
+    for b, src in order:
         res = _match_in_pool(header, brand_filter(customers, b), llm, note)
         if res.status != 'none':          # matched, or a genuine tie -> stop here
-            if res.status == 'matched' and not explicit and b == context_brand and b != 'KFC':
-                res.assumed_brand = b
-                res.reason += f'; brand {b} assumed from the sender\'s earlier message'
+            if res.status == 'matched' and src and b != 'KFC':
+                res.assumed_brand, res.assumed_source = b, src
+                res.reason += f"; brand {b} assumed from the sender's {'contact name' if src == 'sender' else 'earlier message'}"
             break
     return res
 
