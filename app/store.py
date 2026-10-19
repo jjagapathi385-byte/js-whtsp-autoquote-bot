@@ -25,6 +25,7 @@ class Store:
         self._hb = 0.0          # bridge heartbeat: memory only (nothing worth persisting)
         self._alerted = False
         self._sbrands = None    # sender key -> brand assigned in /admin (loaded once)
+        self._seen = None       # sender key -> {'sender','contact'} for every sender seen (loaded once)
 
     # ── cached single values ──
     def _get(self, key):
@@ -152,3 +153,27 @@ class Store:
             m.pop(key, None)
         self.r.set('sender_brands', json.dumps(m))
         self._sbrands = m
+
+    # ── senders seen so far, so /admin can list them even right after a restart ──
+    def _seen_map(self):
+        if self._seen is None:
+            self._seen = json.loads(self.r.get('seen_senders') or '{}')
+        return self._seen
+
+    def note_sender(self, key, sender, contact):
+        """Remember a sender. Written to Redis only when the sender is new or their name changed (rare)."""
+        if not key:
+            return
+        m = self._seen_map()
+        cur = m.get(key)
+        if cur and cur.get('sender') == sender and cur.get('contact') == contact:
+            return
+        m.pop(key, None)
+        m[key] = {'sender': sender, 'contact': contact}
+        while len(m) > 200:
+            m.pop(next(iter(m)))
+        self.r.set('seen_senders', json.dumps(m))
+
+    def seen_senders(self):
+        """Newest first: [(key, {'sender','contact'})]"""
+        return list(reversed(list(self._seen_map().items())))

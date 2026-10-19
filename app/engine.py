@@ -83,6 +83,8 @@ class Engine:
     def _handle(self, ev):
         if self._is_owner(ev):
             return {'action': 'ignored', 'why': 'owner number'}
+        if not ev.get('media'):
+            self.store.note_sender(self.sender_key(ev), ev.get('sender', ''), ev.get('contact_name', ''))
         if self.store.status() != 'RUNNING':
             return {'action': 'ignored', 'why': 'bot stopped'}
         if float(ev.get('ts', 0)) < self.store.started_at():

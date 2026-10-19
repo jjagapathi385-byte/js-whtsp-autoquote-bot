@@ -157,12 +157,9 @@ def create_app(engine=None, start_worker=True, async_events=True):
         events = ''.join(f'<div class="pend"><span class="muted">{ist(e["t"])} IST</span> <b>{esc(e["kind"])}</b> '
                          f'· {esc(e["action"])}<div class="muted">{esc(e["sender"])} · id …{esc(e["id"])} {esc(e["why"])}</div></div>'
                          for e in list(eng.events)[:12])
-        seen = {}
-        for e in eng.events:
-            if e['key'] and e['kind'] == 'message' and e['key'] not in seen:
-                seen[e['key']] = e
+        seen = {k: v for k, v in st.seen_senders()[:30]}
         for k in st.sender_brands():
-            seen.setdefault(k, {'key': k, 'sender': k, 'contact': ''})
+            seen.setdefault(k, {'sender': k, 'contact': ''})
         brand_rows = ''
         for k, e in list(seen.items())[:20]:
             manual = st.sender_brand(k)
