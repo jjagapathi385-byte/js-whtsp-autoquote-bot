@@ -171,9 +171,10 @@ def create_app(engine=None, start_worker=True, async_events=True):
             brand_rows += (f'<div class="pend"><b>{who}</b> <span class="muted">{esc(e.get("sender") if e.get("contact") else "")}</span>'
                            f'<div class="muted">{label}</div>'
                            + btn('/admin/sender-brand', 'KFC', 'small', hid + '<input type="hidden" name="brand" value="KFC">')
-                           + btn('/admin/sender-brand', 'PHD', 'small', hid + '<input type="hidden" name="brand" value="PHD">')
-                           + btn('/admin/sender-brand', 'Costa', 'small', hid + '<input type="hidden" name="brand" value="COSTA">')
-                           + btn('/admin/sender-brand', 'Clear', 'grey small', hid + '<input type="hidden" name="brand" value="">') + '</div>')
+           		   + btn('/admin/sender-brand', 'PHD', 'small', hid + '<input type="hidden" name="brand" value="PHD">')
+           		   + btn('/admin/sender-brand', 'Costa', 'small', hid + '<input type="hidden" name="brand" value="COSTA">')
+           		   + btn('/admin/sender-brand', 'Paradise', 'small', hid + '<input type="hidden" name="brand" value="PARADISE">')
+           		   + btn('/admin/sender-brand', 'Clear', 'grey small', hid + '<input type="hidden" name="brand" value="">')
         recent = ''.join(f'<div class="pend"><b>{esc(r.get("status"))}</b> · {esc(r.get("sender"))}'
                          f'<div class="muted">{esc(r.get("detail"))}</div></div>' for r in st.recent()[:10])
         body = (f'<h1>JS Auto QuoteBot</h1>'
@@ -239,7 +240,7 @@ def create_app(engine=None, start_worker=True, async_events=True):
     def sender_brand():
         guard()
         brand = request.form.get('brand', '')
-        if brand not in ('KFC', 'PHD', 'COSTA', 'VAANGO', ''):
+        if brand not in ('KFC', 'PHD', 'PARADISE', 'COSTA', 'VAANGO', ''):
             abort(400)
         key = request.form.get('key', '').strip()
         if not key:

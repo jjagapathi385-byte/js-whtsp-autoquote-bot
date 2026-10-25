@@ -25,6 +25,10 @@ ZOHO_TOKEN_URL = 'https://accounts.zoho.in/oauth/v2/token'
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 
+# Paradise-specific configuration (isolated from KFC/PHD)
+PARADISE_GROUP_JID = os.environ.get('PARADISE_GROUP_JID', '')
+MARKUP_PARADISE = float(os.environ.get('MARKUP_PARADISE', '1.05'))  # 5% default markup
+
 # Duplicate guard: same customer AND same total within this many minutes (see zoho.find_recent_duplicate)
 DUPLICATE_WINDOW_MINUTES = 30
 

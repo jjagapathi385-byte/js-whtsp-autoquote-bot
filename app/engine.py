@@ -105,12 +105,20 @@ class Engine:
         if brand and ev.get('sender'):
             self.store.add_brand_context(ev['sender'], float(ev['ts']), brand)
 
-    def _schedule(self, ev, cls):
+def _schedule(self, ev, cls):
         self._record_brand(ev, cls)
+        
+        # Check if the incoming message is from the designated Paradise group JID
+        group_id = ev.get('group_id') or ev.get('chat_jid') or ''
+        is_paradise = bool(config.PARADISE_GROUP_JID and group_id == config.PARADISE_GROUP_JID)
+        
         msg = {'id': ev['id'], 'sender': ev.get('sender', ''), 'sender_jid': ev.get('sender_jid', ''), 'text': ev['text'], 'ts': float(ev['ts']),
                'due': float(ev['ts']) + config.TIMER_SECONDS, 'is_forwarded': bool(ev.get('is_forwarded')),
                'intake_action': cls.action, 'intake_reasons': cls.reasons, 'default_ok': cls.default_ok,
-               'sender_key': self.sender_key(ev), 'contact_name': ev.get('contact_name', '')}
+               'sender_key': self.sender_key(ev), 'contact_name': ev.get('contact_name', ''),
+               'group_id': group_id,
+               'brand_override': 'PARADISE' if is_paradise else '',
+               'markup_override': config.MARKUP_PARADISE if is_paradise else config.MARKUP}
         self.store.add_pending(msg)
         return {'action': 'scheduled', 'id': ev['id'], 'due': msg['due']}
 

@@ -81,28 +81,35 @@ def process_message(msg, d):
                     or matching.brand_from_name(sender))
     customers = d.zoho.customers()
     default_name = config.DEFAULT_CUSTOMER_NAME.strip().lower()
-    pool = [c for c in customers if c['contact_name'].strip().lower() != default_name]   # never a match target
+    
+    # If this is a Paradise message, strictly filter pool to Paradise stores only
+    if msg.get('brand_override') == 'PARADISE':
+        pool = [c for c in customers if 'PARADISE' in c['contact_name'].upper() and c['contact_name'].strip().lower() != default_name]
+    else:
+        pool = [c for c in customers if c['contact_name'].strip().lower() != default_name]
+
     mr = matching.match_customer(text, parsed.get('customer_name', ''), pool, d.llm, context_brand=ctx,
                                  sender_brand=sender_brand)
     name_in_message = (parsed.get('customer_name') or matching.header_text(text)).strip()
     used_default, unclear = False, ''
+    
     if mr.status == 'matched':
         customer = mr.customer
     else:
-        if mr.ai_failed:                       # the store is not "unclear", the AI just could not answer: retry
+        if mr.ai_failed:
             return retry(mr.reason, name_in_message or 'unknown')
         unclear = mr.reason or 'customer not matched'
-        if mr.candidates:
-            unclear += ' (possible: ' + ', '.join(mr.candidates[:5]) + ')'
+        
+        # For Paradise, if store isn't matched via place name, NEVER block/flag—auto-fall back to default customer!
         customer = next((c for c in customers if c['contact_name'].strip().lower() == default_name), None)
         if not customer:
-            return flag([unclear, f"the default customer '{config.DEFAULT_CUSTOMER_NAME}' does not exist in Zoho: "
-                                  'please create it'], f"{name_in_message or 'unknown'} — low confidence")
+            return flag([unclear, f"the default customer '{config.DEFAULT_CUSTOMER_NAME}' does not exist in Zoho"], f"{name_in_message or 'unknown'} — low confidence")
         used_default = True
     cname = customer['contact_name']
 
     # 3. totals / measures / safety checks (code, not AI)
-    res = rules.apply_rules(parsed)
+    target_markup = msg.get('markup_override') or config.MARKUP
+    res = rules.apply_rules(parsed, markup=target_markup)
     if res['status'] != 'ok':
         return flag(res['issues'], cname)
     emails = _emails(parsed, text)
@@ -203,18 +210,23 @@ def process_message(msg, d):
         wa_status = f'PDF fetch failed ({e})'
     if post and pdf and d.bridge:
         try:
-            tag = msg.get('sender_jid') or None                          # tag the person who asked, on every quote
+            tag = msg.get('sender_jid') or None
             user = tag.split(':')[0].split('@')[0] if tag else ''
-            shown = (name_in_message[:80] or cname) if used_default else cname   # unclear store: the name as written
+            shown = (name_in_message[:80] or cname) if used_default else cname
             caption = (config.CAPTION_TEMPLATE.replace('{customer}', shown).replace('{number}', number)
                        .replace('@{user}', f'@{user}' if user else '').replace('{user}', user))
             caption = re.sub(r'\s+', ' ', caption).strip()
-            d.bridge.send_document(f'{number}.pdf', pdf, caption, mentions=[tag] if tag else None)
+            
+            # Post back to the specific group ID that originated the message
+            target_group = msg.get('group_id')
+            if target_group and hasattr(d.bridge, 'send_to_group'):
+                d.bridge.send_to_group(target_group, f'{number}.pdf', pdf, caption, mentions=[tag] if tag else None)
+            else:
+                d.bridge.send_document(f'{number}.pdf', pdf, caption, mentions=[tag] if tag else None)
+                
             wa_status = 'posted to group' + (' (sender tagged)' if tag else ' (sender could not be tagged)')
         except Exception as e:
-            wa_status = f'FAILED to post ({e}) — please forward manually'
-    elif post and not pdf and 'failed' not in wa_status:
-        wa_status = 'PDF not available — please forward manually'
+            wa_status = 'FAILED to post — please forward manually'
 
     txt = notify.quote_created(number, cname, who, email_status, res['warnings'])
     d.notify(txt + f'\n💬 WhatsApp: {wa_status}')
