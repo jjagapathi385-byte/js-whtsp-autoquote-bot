@@ -169,7 +169,7 @@ def create_app(engine=None, start_worker=True, async_events=True):
             who = esc(e.get('contact') or e.get('sender') or k)
             hid = f'<input type="hidden" name="key" value="{esc(k)}">'
             brand_rows += (f'<div class="pend"><b>{who}</b> <span class="muted">{esc(e.get("sender") if e.get("contact") else "")}</span>'
-                           f'<div class="muted">{label}</div>'
+                           f'<div class="muted">{label}</div>')
                            + btn('/admin/sender-brand', 'KFC', 'small', hid + '<input type="hidden" name="brand" value="KFC">')
            		   + btn('/admin/sender-brand', 'PHD', 'small', hid + '<input type="hidden" name="brand" value="PHD">')
            		   + btn('/admin/sender-brand', 'Costa', 'small', hid + '<input type="hidden" name="brand" value="COSTA">')
