@@ -105,7 +105,7 @@ class Engine:
         if brand and ev.get('sender'):
             self.store.add_brand_context(ev['sender'], float(ev['ts']), brand)
 
-def _schedule(self, ev, cls):
+    def _schedule(self, ev, cls):
         self._record_brand(ev, cls)
         
         # Check if the incoming message is from the designated Paradise group JID
