@@ -14,10 +14,16 @@ class Bridge:
     def __init__(self, http=None):
         self.http = http or requests
 
-    def send_document(self, filename, data, caption, mentions=None):
-        if not config.BRIDGE_URL or not config.BRIDGE_SECRET:
-            raise RuntimeError('BRIDGE_URL / BRIDGE_SECRET not set')
-        r = self.http.post(_base(config.BRIDGE_URL) + '/send',
+    def send_document(self, filename, data, caption, mentions=None, is_paradise=False):
+        target_url = config.BRIDGE_URL_PARADISE if is_paradise else config.BRIDGE_URL_DEVYANI
+        # Fallback to general BRIDGE_URL if specific ones aren't set
+        if not target_url:
+            target_url = config.BRIDGE_URL
+            
+        if not target_url or not config.BRIDGE_SECRET:
+            raise RuntimeError('Bridge URLs / BRIDGE_SECRET not set')
+            
+        r = self.http.post(_base(target_url) + '/send',
                            headers={'X-Bridge-Secret': config.BRIDGE_SECRET},
                            json={'filename': filename, 'caption': caption, 'mentions': list(mentions or []),
                                  'data_b64': base64.b64encode(data).decode()}, timeout=60)

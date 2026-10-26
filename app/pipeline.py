@@ -86,7 +86,8 @@ def process_message(msg, d):
     if msg.get('brand_override') == 'PARADISE':
         pool = [c for c in customers if 'PARADISE' in c['contact_name'].upper() and c['contact_name'].strip().lower() != default_name]
     else:
-        pool = [c for c in customers if c['contact_name'].strip().lower() != default_name]
+        # Devyani/KFC pool: strictly EXCLUDE Paradise stores so they never cross over!
+        pool = [c for c in customers if 'PARADISE' not in c['contact_name'].upper() and c['contact_name'].strip().lower() != default_name]
 
     mr = matching.match_customer(text, parsed.get('customer_name', ''), pool, d.llm, context_brand=ctx,
                                  sender_brand=sender_brand)
@@ -217,12 +218,11 @@ def process_message(msg, d):
                        .replace('@{user}', f'@{user}' if user else '').replace('{user}', user))
             caption = re.sub(r'\s+', ' ', caption).strip()
             
-            # Post back to the specific group ID that originated the message
-            target_group = msg.get('group_id')
-            if target_group and hasattr(d.bridge, 'send_to_group'):
-                d.bridge.send_to_group(target_group, f'{number}.pdf', pdf, caption, mentions=[tag] if tag else None)
-            else:
-                d.bridge.send_document(f'{number}.pdf', pdf, caption, mentions=[tag] if tag else None)
+            # Check if this is a Paradise message
+            is_paradise = (msg.get('brand_override') == 'PARADISE')
+            
+            # Dispatch to the correct bridge URL
+            d.bridge.send_document(f'{number}.pdf', pdf, caption, mentions=[tag] if tag else None, is_paradise=is_paradise)
                 
             wa_status = 'posted to group' + (' (sender tagged)' if tag else ' (sender could not be tagged)')
         except Exception as e:

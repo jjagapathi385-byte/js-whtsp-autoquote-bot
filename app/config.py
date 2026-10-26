@@ -37,7 +37,8 @@ REDIS_URL = os.environ.get('REDIS_URL', '')
 ADMIN_PIN = os.environ.get('ADMIN_PIN', '')                  # admin panel is locked if empty
 FLASK_SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', '')
 BRIDGE_SECRET = os.environ.get('BRIDGE_SECRET', '')          # shared secret with the Node bridge
-BRIDGE_URL = os.environ.get('BRIDGE_URL', '')                # where Flask sends PDFs for the group
+BRIDGE_URL_DEVYANI = os.environ.get('BRIDGE_URL_DEVYANI', '')		# where Flask sends PDFs for the Devyani group
+BRIDGE_URL_PARADISE = os.environ.get('BRIDGE_URL_PARADISE', '')         # where Flask sends PDFs for the Paradise group
 POLL_SECONDS = int(os.environ.get('POLL_SECONDS', '15'))     # due-timer check; 15s keeps Upstash usage low
 HEARTBEAT_ALERT_SECONDS = 300                                # alert if the bridge is silent this long
 
