@@ -19,15 +19,18 @@ def send(text, post=None):
 
 def quote_created(quote_number, customer, sender, email_status='not applicable', warnings=None, dry_run=False, group_name=""):
     header = '🧪 DRY RUN — nothing created\n' if dry_run else '📋 New Quote Created\n'
-    lines = [header]
-    if group_name:
-        lines.append(f'💬 Group: {group_name}')
-    lines.extend([
+    
+    # Always display the group line so we can see what was received
+    display_group = group_name if group_name else "⚠️ Not Provided in Payload"
+    
+    lines = [
+        header,
+        f'💬 Group: {display_group}',
         f'🔢 Quote No: {quote_number}',
         f'🏪 Customer: {customer}',
         f'👤 Sender: {sender}',
         f'📧 Email: {email_status}'
-    ])
+    ]
     for w in warnings or []:
         lines.append(f'{"⚠️" if w.startswith("DEFAULT CUSTOMER") else "ℹ️"} {w}')
     return '\n'.join(lines)
