@@ -195,10 +195,10 @@ setInterval(() => { if (connected) post('/heartbeat', {}); }, 60 * 1000);
 
 // ── /send: Flask asks us to post a PDF to the group (one at a time, small random delay) ──
 let sendChain = Promise.resolve();
-function queueSend(job) {
+function queueSendToTarget(targetGroup, job) {
   const run = sendChain.then(async () => {
     await new Promise((r) => setTimeout(r, 2000 + Math.random() * 4000));   // never in bursts
-    await sock.sendMessage(WHATSAPP_GROUP_ID, buildSendPayload(job));
+    await sock.sendMessage(targetGroup, buildSendPayload(job));
   });
   sendChain = run.catch(() => {});
   return run;
@@ -223,11 +223,18 @@ http.createServer((req, res) => {
   }
   if (req.method === 'POST' && req.url === '/send') {
     if (!BRIDGE_SECRET || req.headers['x-bridge-secret'] !== BRIDGE_SECRET) return reply(403, { error: 'forbidden' });
-    if (!connected || !WHATSAPP_GROUP_ID) return reply(503, { error: 'not connected or no group id' });
     let body = '';
     req.on('data', (c) => { body += c; if (body.length > 30e6) req.destroy(); });
     req.on('end', async () => {
-      try { await queueSend(JSON.parse(body)); reply(200, { sent: true }); }
+      try { 
+        const data = JSON.parse(body);
+        // Use target group from job payload if provided, otherwise fall back to container's WHATSAPP_GROUP_ID
+        const targetGroup = data.group_id || WHATSAPP_GROUP_ID;
+        if (!connected || !targetGroup) return reply(503, { error: 'not connected or no group id' });
+        
+        await queueSendToTarget(targetGroup, data); 
+        reply(200, { sent: true }); 
+      }
       catch (e) { say('send failed:', e.message); reply(500, { error: e.message }); }
     });
     return undefined;
