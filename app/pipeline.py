@@ -249,7 +249,15 @@ def process_message(msg, d):
             wa_status = 'FAILED to post — please forward manually'
 
     # Extract group name for Telegram notification
-    group_name = msg.get('group_name') or msg.get('chat_name') or ''
+    # Extract group name from message payload safely covering all possible key names
+    group_name = (
+        msg.get('group_name') or 
+        msg.get('chat_title') or 
+        msg.get('chat_name') or 
+        msg.get('group') or 
+        msg.get('chat') or 
+        ''
+    )
     txt = notify.quote_created(number, cname, who, email_status, res['warnings'], group_name=group_name)
     d.notify(txt + f'\n💬 WhatsApp: {wa_status}')
     return {'status': 'created', 'number': number, 'customer': cname, 'email': email_status, 'whatsapp': wa_status}
