@@ -78,7 +78,7 @@ async function post(path, body) {
 const MEDIA_KEYS = ['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage', 'stickerMessage',
   'ptvMessage', 'contactMessage', 'locationMessage', 'liveLocationMessage', 'pollCreationMessage'];
 
-function handleUpsert({ messages, type }) {
+async function handleUpsert({ messages, type }) {
   if (DEBUG) say('upsert type=' + type, 'count=' + messages.length);
   if (type !== 'notify') return;                                    // ignore history sync
   for (const msg of messages) {
@@ -94,12 +94,17 @@ function handleUpsert({ messages, type }) {
       const pm = m.protocolMessage;
       const senderJid = key.participant || '';
       const base = { ...senderInfo(key, msg.pushName), contact_name: book.lookup(senderJid, key.participantAlt) };
+      
+      // Fetch group name once for this message event
+      const groupName = await getGroupName(key.remoteJid);
+      const ctx = m.extendedTextMessage?.contextInfo || {};
+      const text = m.conversation || m.extendedTextMessage?.text || '';
+
       if (pm) {                                                     // delete / edit of an earlier message
         const t = pm.type;
         const target = pm.key?.id;
         if (!target) continue;
         if (t === 0 || t === 'REVOKE') {
-          const groupName = await getGroupName(key.remoteJid);
           post('/incoming', {
             event: 'message', id: key.id, text, ts: toNum(msg.messageTimestamp) || Math.floor(Date.now() / 1000),
             is_forwarded: !!ctx.isForwarded,
@@ -112,24 +117,18 @@ function handleUpsert({ messages, type }) {
         continue;
       }
       if (MEDIA_KEYS.some((k) => m[k])) continue;                   // attachments: dropped here, never forwarded
-
-      const ctx = m.extendedTextMessage?.contextInfo || {};
-      const text = m.conversation || m.extendedTextMessage?.text || '';
       if (!text.trim()) continue;
       
-      // 1. Fetch the group name using the helper function we added earlier
-      const groupName = await getGroupName(key.remoteJid);
-
-      // 2. Include 'group_name: groupName' right inside the payload sent to Flask
+      // Standard message forward
       post('/incoming', {
         event: 'message', id: key.id, text, ts: toNum(msg.messageTimestamp) || Math.floor(Date.now() / 1000),
         is_forwarded: !!ctx.isForwarded,
         is_reply: !!ctx.quotedMessage || (ctx.mentionedJid || []).length > 0,
         group_id: key.remoteJid,
-        group_name: groupName, // <--- This sends the readable name to your Python backend!
+        group_name: groupName,
         ...base,
       });
-      // Handy for finding your own sender id (OWNER_JIDS) if WhatsApp hides numbers in groups:
+
       if (process.env.LOG_SENDERS === '1') say('sender:', base.sender, '| jid:', senderJid, '| alt:', key.participantAlt || '-');
     } catch (e) { say('message handling error:', e.message); }
   }
