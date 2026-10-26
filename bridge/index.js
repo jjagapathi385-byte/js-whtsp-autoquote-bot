@@ -102,7 +102,8 @@ function handleUpsert({ messages, type }) {
       post('/incoming', {
         event: 'message', id: key.id, text, ts: toNum(msg.messageTimestamp) || Math.floor(Date.now() / 1000),
         is_forwarded: !!ctx.isForwarded,
-        is_reply: !!ctx.quotedMessage || (ctx.mentionedJid || []).length > 0,    // replies and tagged messages are ignored by Flask
+        is_reply: !!ctx.quotedMessage || (ctx.mentionedJid || []).length > 0,
+        group_id: key.remoteJid,  // <--- Put it right here for regular messages!
         ...base,
       });
       // Handy for finding your own sender id (OWNER_JIDS) if WhatsApp hides numbers in groups:
