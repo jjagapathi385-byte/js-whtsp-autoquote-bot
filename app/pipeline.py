@@ -249,9 +249,6 @@ def process_message(msg, d):
             wa_status = 'FAILED to post — please forward manually'
 
     # Extract group name for Telegram notification
-    print("RAW MSG KEYS:", list(msg.keys()))
-    print("RAW MSG PAYLOAD:", msg)
-
     # Extract group name or fallback to group_id
     group_name = (
     msg.get('group_name') or 

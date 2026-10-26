@@ -13,6 +13,21 @@ import QRCode from 'qrcode';
 import crypto from 'node:crypto';
 import http from 'node:http';
 
+const groupNameCache = new Map();
+
+async function getGroupName(remoteJid) {
+  if (!remoteJid || !remoteJid.endsWith('@g.us')) return '';
+  if (groupNameCache.has(remoteJid)) return groupNameCache.get(remoteJid);
+  try {
+    const metadata = await sock.groupMetadata(remoteJid);
+    const name = metadata?.subject || '';
+    if (name) groupNameCache.set(remoteJid, name);
+    return name;
+  } catch (e) {
+    return '';
+  }
+}
+
 const {
   FLASK_URL = '',            // e.g. https://your-flask-service.up.railway.app
   BRIDGE_SECRET = '',        // same value as in the Flask service
@@ -84,13 +99,15 @@ function handleUpsert({ messages, type }) {
         const target = pm.key?.id;
         if (!target) continue;
         if (t === 0 || t === 'REVOKE') {
+          const groupName = await getGroupName(key.remoteJid);
           post('/incoming', {
-        event: 'message', id: key.id, text, ts: toNum(msg.messageTimestamp) || Math.floor(Date.now() / 1000),
-        is_forwarded: !!ctx.isForwarded,
-        is_reply: !!ctx.quotedMessage || (ctx.mentionedJid || []).length > 0,
-        group_id: key.remoteJid,  // <--- ADD THIS LINE HERE
-        ...base,
-      });
+            event: 'message', id: key.id, text, ts: toNum(msg.messageTimestamp) || Math.floor(Date.now() / 1000),
+            is_forwarded: !!ctx.isForwarded,
+            is_reply: !!ctx.quotedMessage || (ctx.mentionedJid || []).length > 0,
+            group_id: key.remoteJid,
+            group_name: groupName,
+            ...base,
+          });
         }
         continue;
       }
@@ -99,11 +116,17 @@ function handleUpsert({ messages, type }) {
       const ctx = m.extendedTextMessage?.contextInfo || {};
       const text = m.conversation || m.extendedTextMessage?.text || '';
       if (!text.trim()) continue;
+      
+      // 1. Fetch the group name using the helper function we added earlier
+      const groupName = await getGroupName(key.remoteJid);
+
+      // 2. Include 'group_name: groupName' right inside the payload sent to Flask
       post('/incoming', {
         event: 'message', id: key.id, text, ts: toNum(msg.messageTimestamp) || Math.floor(Date.now() / 1000),
         is_forwarded: !!ctx.isForwarded,
         is_reply: !!ctx.quotedMessage || (ctx.mentionedJid || []).length > 0,
-        group_id: key.remoteJid,  // <--- Put it right here for regular messages!
+        group_id: key.remoteJid,
+        group_name: groupName, // <--- This sends the readable name to your Python backend!
         ...base,
       });
       // Handy for finding your own sender id (OWNER_JIDS) if WhatsApp hides numbers in groups:
