@@ -73,69 +73,56 @@ def process_message(msg, d):
     except Exception as e:
         return flag([f'Could not parse the message: {e}'])
 
-    # 2. customer, brand pool, markup, and ambiguity management
+    # -------------------------------------------------------------------------
+    # 2. Customer, Brand, Markup, and Robust Fallback Logic
+    # -------------------------------------------------------------------------
     ctx = d.store.brand_context(sender, msg.get('ts', 0), config.BRAND_CONTEXT_SECONDS) if sender else None
-    # Brand of the SENDER, used only when the message names no brand and has no store code:
-    # assigned in /admin > saved contact name ("PHD Supervisor Ravi") > the sender's own profile name.
     sender_brand = (d.store.sender_brand(msg.get('sender_key', '')) or matching.brand_from_name(msg.get('contact_name'))
                     or matching.brand_from_name(sender))
     customers = d.zoho.customers()
     default_name = config.DEFAULT_CUSTOMER_NAME.strip().lower()
     
-    # Check if this is a Paradise message
     is_paradise_msg = (msg.get('brand_override') == 'PARADISE')
 
-    # -------------------------------------------------------------------------
     # A. Dynamic Store Pool & Markup Target Selection
-    # -------------------------------------------------------------------------
     if is_paradise_msg:
-        # Paradise Pipeline: Search ONLY Paradise stores, enforce 5% markup
         pool = [c for c in customers if 'PARADISE' in c['contact_name'].upper() and c['contact_name'].strip().lower() != default_name]
         target_markup = msg.get('markup_override') or config.MARKUP_PARADISE
     elif msg.get('brand_override') == 'ALL':
-        # Global admin / All brands override: allow searching across all stores (10% standard markup)
         pool = [c for c in customers if c['contact_name'].strip().lower() != default_name]
         target_markup = msg.get('markup_override') or config.MARKUP
     else:
-        # Devyani Pipeline (KFC / PHD / Costa / Vaango): Strictly EXCLUDE Paradise stores (10% standard markup)
         pool = [c for c in customers if 'PARADISE' not in c['contact_name'].upper() and c['contact_name'].strip().lower() != default_name]
         target_markup = msg.get('markup_override') or config.MARKUP
 
-    # -------------------------------------------------------------------------
-    # B. Customer Matching & Unassigned User Ambiguity Guard
-    # -------------------------------------------------------------------------
-    mr = matching.match_customer(text, parsed.get('customer_name', ''), pool, d.llm, context_brand=ctx,
-                                 sender_brand=sender_brand)
     name_in_message = (parsed.get('customer_name') or matching.header_text(text)).strip()
-    used_default, unclear = False, ''
-    
-    # Check if the message text explicitly contains a brand name (e.g. KFC, PHD, Paradise, Vaango, Costa)
     text_has_explicit_brand = bool(matching.brand_from_name(text) or matching.brand_from_name(name_in_message))
 
-    # UNASSIGNED USER AMBIGUITY GUARD:
-    # If the sender is UNASSIGNED (no sender_brand, no context brand) and not in Paradise group,
-    # AND did not provide an explicit brand/store code in the message (e.g., typed just "moosapet"),
-    # do NOT guess a single brand store. Force fallback to DEFAULT_CUSTOMER ("STORE").
-    if (mr.status == 'matched' 
-            and not sender_brand 
-            and not ctx 
-            and not is_paradise_msg
-            and not text_has_explicit_brand):
-        
-        mr.status = 'unmatched'
-        mr.reason = f"Ambiguous area name '{name_in_message}' provided by unassigned user without explicit brand (e.g., KFC/PHD)"
+    # B. Strict Unassigned User Guard vs. Assigned User Matching
+    if not sender_brand and not ctx and not is_paradise_msg and not text_has_explicit_brand:
+        # Unassigned user without explicit brand -> Force immediate default customer fallback
+        class ForcedMatch:
+            status = 'forced_default'
+            reason = f"Unassigned user provided store '{name_in_message}' without explicit brand prefix"
+            ai_failed = False
+        mr = ForcedMatch()
+    else:
+        # Assigned user or explicit brand message -> Run normal Zoho customer pool matching
+        mr = matching.match_customer(text, parsed.get('customer_name', ''), pool, d.llm, context_brand=ctx,
+                                     sender_brand=sender_brand)
 
-    # -------------------------------------------------------------------------
-    # C. Fallback & Final Customer Selection
-    # -------------------------------------------------------------------------
-    if mr.status == 'matched':
+    used_default, unclear = False, ''
+
+    # C. Final Customer Resolution (Catches unmatched stores for BOTH assigned & unassigned users)
+    if getattr(mr, 'status', 'matched') == 'matched':
         customer = mr.customer
     else:
-        if mr.ai_failed:
+        # If matching failed because the store doesn't exist in Zoho (or was forced), handle fallback gracefully
+        if getattr(mr, 'ai_failed', False):
             return retry(mr.reason, name_in_message or 'unknown')
-        unclear = mr.reason or 'customer not matched'
+        unclear = getattr(mr, 'reason', 'store not found in customer list')
         
-        # Fall back to default customer ("STORE") — retains correct target_markup (10% or 5%)
+        # Fall back to default customer ("STORE") with the correct group markup (10% or 5%)
         customer = next((c for c in customers if c['contact_name'].strip().lower() == default_name), None)
         if not customer:
             return flag([unclear, f"the default customer '{config.DEFAULT_CUSTOMER_NAME}' does not exist in Zoho"], f"{name_in_message or 'unknown'} — low confidence")
@@ -261,6 +248,8 @@ def process_message(msg, d):
         except Exception as e:
             wa_status = 'FAILED to post — please forward manually'
 
-    txt = notify.quote_created(number, cname, who, email_status, res['warnings'])
+    # Extract group name for Telegram notification
+    group_name = msg.get('group_name') or msg.get('chat_name') or ''
+    txt = notify.quote_created(number, cname, who, email_status, res['warnings'], group_name=group_name)
     d.notify(txt + f'\n💬 WhatsApp: {wa_status}')
     return {'status': 'created', 'number': number, 'customer': cname, 'email': email_status, 'whatsapp': wa_status}
