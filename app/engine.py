@@ -109,7 +109,7 @@ class Engine:
         self._record_brand(ev, cls)
         
         # Check if the incoming message is from the designated Paradise group JID
-        group_id = ev.get('group_id') or ev.get('chat_jid') or ''
+        group_id = ev.get('group_id') or ev.get('chat_jid') or ev.get('chatId') or ev.get('jid') or ''
         is_paradise = bool(config.PARADISE_GROUP_JID and group_id == config.PARADISE_GROUP_JID)
         
         msg = {'id': ev['id'], 'sender': ev.get('sender', ''), 'sender_jid': ev.get('sender_jid', ''), 'text': ev['text'], 'ts': float(ev['ts']),

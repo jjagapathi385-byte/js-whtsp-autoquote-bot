@@ -84,11 +84,13 @@ function handleUpsert({ messages, type }) {
         const target = pm.key?.id;
         if (!target) continue;
         if (t === 0 || t === 'REVOKE') {
-          post('/incoming', { event: 'delete', id: target, ts: Math.floor(Date.now() / 1000), ...base });
-        } else if (t === 14 || t === 'MESSAGE_EDIT') {
-          const em = unwrap(pm.editedMessage || {});
-          const text = em.conversation || em.extendedTextMessage?.text || '';
-          post('/incoming', { event: 'edit', id: target, text, ts: Math.floor(Date.now() / 1000), ...base });
+          post('/incoming', {
+        event: 'message', id: key.id, text, ts: toNum(msg.messageTimestamp) || Math.floor(Date.now() / 1000),
+        is_forwarded: !!ctx.isForwarded,
+        is_reply: !!ctx.quotedMessage || (ctx.mentionedJid || []).length > 0,
+        group_id: key.remoteJid,  // <--- ADD THIS LINE HERE
+        ...base,
+      });
         }
         continue;
       }
