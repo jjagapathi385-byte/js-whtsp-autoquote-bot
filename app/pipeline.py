@@ -252,14 +252,16 @@ def process_message(msg, d):
     print("RAW MSG KEYS:", list(msg.keys()))
     print("RAW MSG PAYLOAD:", msg)
 
+    # Extract group name or fallback to group_id
     group_name = (
-        msg.get('group_name') or 
-        msg.get('chat_title') or 
-        msg.get('chat_name') or 
-        msg.get('group') or 
-        msg.get('chat') or 
-        ''
-    )
+    msg.get('group_name') or 
+    msg.get('chat_title') or 
+    msg.get('chat_name') or 
+    msg.get('group_id') or 
+    msg.get('group') or 
+    msg.get('chat') or 
+    ''
+)
     
     warnings = list(res['warnings']) if 'res' in locals() and res.get('warnings') else []
     
