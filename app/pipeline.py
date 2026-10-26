@@ -73,7 +73,7 @@ def process_message(msg, d):
     except Exception as e:
         return flag([f'Could not parse the message: {e}'])
 
-    # 2. customer: code first (parsed name, then raw message), brand, location, strict AI
+    # 2. customer, brand pool, markup, and ambiguity management
     ctx = d.store.brand_context(sender, msg.get('ts', 0), config.BRAND_CONTEXT_SECONDS) if sender else None
     # Brand of the SENDER, used only when the message names no brand and has no store code:
     # assigned in /admin > saved contact name ("PHD Supervisor Ravi") > the sender's own profile name.
@@ -82,18 +82,52 @@ def process_message(msg, d):
     customers = d.zoho.customers()
     default_name = config.DEFAULT_CUSTOMER_NAME.strip().lower()
     
-    # If this is a Paradise message, strictly filter pool to Paradise stores only
-    if msg.get('brand_override') == 'PARADISE':
-        pool = [c for c in customers if 'PARADISE' in c['contact_name'].upper() and c['contact_name'].strip().lower() != default_name]
-    else:
-        # Devyani/KFC pool: strictly EXCLUDE Paradise stores so they never cross over!
-        pool = [c for c in customers if 'PARADISE' not in c['contact_name'].upper() and c['contact_name'].strip().lower() != default_name]
+    # Check if this is a Paradise message
+    is_paradise_msg = (msg.get('brand_override') == 'PARADISE')
 
+    # -------------------------------------------------------------------------
+    # A. Dynamic Store Pool & Markup Target Selection
+    # -------------------------------------------------------------------------
+    if is_paradise_msg:
+        # Paradise Pipeline: Search ONLY Paradise stores, enforce 5% markup
+        pool = [c for c in customers if 'PARADISE' in c['contact_name'].upper() and c['contact_name'].strip().lower() != default_name]
+        target_markup = msg.get('markup_override') or config.MARKUP_PARADISE
+    elif msg.get('brand_override') == 'ALL':
+        # Global admin / All brands override: allow searching across all stores (10% standard markup)
+        pool = [c for c in customers if c['contact_name'].strip().lower() != default_name]
+        target_markup = msg.get('markup_override') or config.MARKUP
+    else:
+        # Devyani Pipeline (KFC / PHD / Costa / Vaango): Strictly EXCLUDE Paradise stores (10% standard markup)
+        pool = [c for c in customers if 'PARADISE' not in c['contact_name'].upper() and c['contact_name'].strip().lower() != default_name]
+        target_markup = msg.get('markup_override') or config.MARKUP
+
+    # -------------------------------------------------------------------------
+    # B. Customer Matching & Unassigned User Ambiguity Guard
+    # -------------------------------------------------------------------------
     mr = matching.match_customer(text, parsed.get('customer_name', ''), pool, d.llm, context_brand=ctx,
                                  sender_brand=sender_brand)
     name_in_message = (parsed.get('customer_name') or matching.header_text(text)).strip()
     used_default, unclear = False, ''
     
+    # Check if the message text explicitly contains a brand name (e.g. KFC, PHD, Paradise, Vaango, Costa)
+    text_has_explicit_brand = bool(matching.brand_from_name(text) or matching.brand_from_name(name_in_message))
+
+    # UNASSIGNED USER AMBIGUITY GUARD:
+    # If the sender is UNASSIGNED (no sender_brand, no context brand) and not in Paradise group,
+    # AND did not provide an explicit brand/store code in the message (e.g., typed just "moosapet"),
+    # do NOT guess a single brand store. Force fallback to DEFAULT_CUSTOMER ("STORE").
+    if (mr.status == 'matched' 
+            and not sender_brand 
+            and not ctx 
+            and not is_paradise_msg
+            and not text_has_explicit_brand):
+        
+        mr.status = 'unmatched'
+        mr.reason = f"Ambiguous area name '{name_in_message}' provided by unassigned user without explicit brand (e.g., KFC/PHD)"
+
+    # -------------------------------------------------------------------------
+    # C. Fallback & Final Customer Selection
+    # -------------------------------------------------------------------------
     if mr.status == 'matched':
         customer = mr.customer
     else:
@@ -101,7 +135,7 @@ def process_message(msg, d):
             return retry(mr.reason, name_in_message or 'unknown')
         unclear = mr.reason or 'customer not matched'
         
-        # For Paradise, if store isn't matched via place name, NEVER block/flag—auto-fall back to default customer!
+        # Fall back to default customer ("STORE") — retains correct target_markup (10% or 5%)
         customer = next((c for c in customers if c['contact_name'].strip().lower() == default_name), None)
         if not customer:
             return flag([unclear, f"the default customer '{config.DEFAULT_CUSTOMER_NAME}' does not exist in Zoho"], f"{name_in_message or 'unknown'} — low confidence")
@@ -109,7 +143,6 @@ def process_message(msg, d):
     cname = customer['contact_name']
 
     # 3. totals / measures / safety checks (code, not AI)
-    target_markup = msg.get('markup_override') or config.MARKUP
     res = rules.apply_rules(parsed, markup=target_markup)
     if res['status'] != 'ok':
         return flag(res['issues'], cname)
