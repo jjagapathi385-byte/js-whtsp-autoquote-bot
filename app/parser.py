@@ -40,7 +40,7 @@ Rules:
 # ── Everything below is worked out in code ──
 _QTY = re.compile(r'(?<![A-Za-z0-9])(\d+(?:\.\d+)?\s*(?:mtrs?|meters?|metres?|m|ft|feet|foot|sq\.?\s*ft|sqft|'
                   r'kgs?|gms?|grams?|ltrs?|litres?|liters?|l|ml|'
-                  r'nos?|pcs?|pieces?|sets?|bags?|rolls?|boxes?))\b', re.I)
+                  r'nos?|pcs?|pieces?|sets?|bags?|rolls?|boxes?))\b', re.I) 
 
 
 def _segments(message):
