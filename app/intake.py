@@ -22,7 +22,7 @@ BRAND_RE = re.compile(r'\b(kfc|phd|pizza\s*hut|pizzahut|costa|vaango)\b', re.I)
 CODE_RE = re.compile(r'(?<![A-Za-z0-9])([KYPZCV])\s{0,2}[-:.]?\s{0,2}(\d{3,4})(?!\d)', re.I)
 
 PAYMENT_RE = re.compile(
-    r'(account|a/c|\bacc\b|ifsc|\bbank\b|state\s*bank|phone\s*pe|phonepe|phone\s*pay|gpay|'
+    r'(account|a/c|\bacc\b|ifsc|(?<!gas\s)(?<!battery\s)\bbank\b|state\s*bank|phone\s*pe|phonepe|phone\s*pay|gpay|'
     r'google\s*pay|\bupi\b|po\s*amount|\bpo\b|holder\s*name)', re.I)
 
 QUOTE_KW_RE = re.compile(r'(quot|quat|question|send|share|amount|total|estimate)', re.I)

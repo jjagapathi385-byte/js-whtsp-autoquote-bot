@@ -27,16 +27,15 @@ Rules:
 3. items: one per line of work/material, INCLUDING lines that have no price (unit_price 0). 
    - CRITICAL (Multi-line & Grouping): If a technician writes a service or part name on one line (e.g., "Ac work", "split AC repair", "Copper pipe and foams") and the quantity/price on the next line (e.g., "R22 gas topup purpose 6kgs- 8000/-" or "2500 rs"), COMBINE them into a single coherent item name and extract the correct total price into line_total.
    - PHRASING (Each one / Unit multiplier): If an item says "8nos" and "Each one 1500", set quantity = 8, unit_price = 1500, and line_total = 12000.
-   - Name = corrected proper English (fix typos); keep sizes inside the name ("50mm cable", "2.5 sq mm wire"); never put a quantity or a length in the name.
+   - Name = corrected proper English (fix typos); keep sizes inside the name ("50mm cable", "2.5 sq mm wire"); never put a quantity, a length, or location/city names (like Vizag, Hyderabad) in the item name.
    - line_total = the amount printed on that line. A price stuck to the name must be split.
    - Counted pieces (no, nos, pcs, sets, bags, rolls, boxes, or "2*650"): quantity = pieces, unit_price = line_total / quantity.
    - Lengths, weights, volumes (meters, mtrs, ft, kg, litre, L, ml): quantity = 1 and unit_price = line_total (never divide).
    - A line with no price: if it's a standalone title, combine it with the priced line below it. Never invent a standalone 0-price item if a price follows immediately.
 4. TOTAL lines ("Total", "Tot amount", "Amount", "Grand total", "Cost above listed") are NOT items: put that number in stated_total (0 if none).
-5. work_description: 2-6 words, Title Case, the kind of work (e.g. "Electrical Work").
+5. work_description: 2-6 words, Title Case, the kind of work (e.g. "Electrical Work"). Never include city or location names (like Vizag, hyd, vijayawada, tadepalli) here.
 6. notes: only useful work context. Leave "" for totals, "please share/send quotation", urgent/ASAP, etc.
 """
-
 
 # ── Everything below is worked out in code ──
 _QTY = re.compile(r'(?<![A-Za-z0-9])(\d+(?:\.\d+)?\s*(?:mtrs?|meters?|metres?|m|ft|feet|foot|sq\.?\s*ft|sqft|'
