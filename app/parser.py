@@ -3,7 +3,8 @@
 - returns stated_total separately (the total is never an item)
 - per item: line_total, unit_type (measure/count/none), measure_text, raw_line
 - measure units (meters, mtrs, ft, kg, litre...) are NOT divided into qty x unit price
-Code in rules.py enforces the measure/total rules even if the model slips."""
+- handles multi-line technician text (combining description lines with subsequent price lines)
+"""
 import re
 from difflib import SequenceMatcher
 
@@ -23,32 +24,27 @@ JSON shape:
 Rules:
 1. customer_name: the store/customer from the header (keep the store code and place words).
 2. email: every email address found, comma separated, else "".
-3. items: one per line of work/material, INCLUDING lines that have no price (unit_price 0). name = corrected proper
-   English (fix typos: "magnitor" -> "Magnetron", "Bolyer moter repair" -> "Boiler Motor Repair", "heate slevs" ->
-   "Heater Sleeves"); keep sizes inside the name ("50mm cable", "2.5 sq mm wire"); never put a quantity or a length
-   in the name.
-   - line_total = the amount printed on that line. A price stuck to the name ("scolding7500") must be split.
+3. items: one per line of work/material, INCLUDING lines that have no price (unit_price 0). 
+   - CRITICAL (Multi-line & Grouping): If a technician writes a service or part name on one line (e.g., "Ac work", "split AC repair", "Copper pipe and foams") and the quantity/price on the next line (e.g., "R22 gas topup purpose 6kgs- 8000/-" or "2500 rs"), COMBINE them into a single coherent item name and extract the correct total price into line_total.
+   - PHRASING (Each one / Unit multiplier): If an item says "8nos" and "Each one 1500", set quantity = 8, unit_price = 1500, and line_total = 12000.
+   - Name = corrected proper English (fix typos); keep sizes inside the name ("50mm cable", "2.5 sq mm wire"); never put a quantity or a length in the name.
+   - line_total = the amount printed on that line. A price stuck to the name must be split.
    - Counted pieces (no, nos, pcs, sets, bags, rolls, boxes, or "2*650"): quantity = pieces, unit_price = line_total / quantity.
    - Lengths, weights, volumes (meters, mtrs, ft, kg, litre, L, ml): quantity = 1 and unit_price = line_total (never divide).
-   - A line with no price: unit_price 0 and line_total 0. Never invent a price.
-4. TOTAL lines ("Total", "Tot amount", "Amount", "Grand total", "Cost above listed") are NOT items: put that number in
-   stated_total (0 if none).
-5. work_description: 2-6 words, Title Case, the kind of work (e.g. "Electrical Work"). Fill it ONLY when no line has its own
-   price (just a total), or when the message is "Work: ... Amount ..." with no item lines: then also return ONE item with
-   name = that work text cleaned up (Title Case), quantity 1, unit_price = line_total = the amount, is_service true, and
-   stated_total = the amount. Otherwise "".
-6. notes: only useful work context (e.g. "AC repair work", "walk in freezer"). Leave "" for totals, "please share/send
-   quotation", urgent/ASAP, advance or payment requests, email addresses, and the store/customer name.
+   - A line with no price: if it's a standalone title, combine it with the priced line below it. Never invent a standalone 0-price item if a price follows immediately.
+4. TOTAL lines ("Total", "Tot amount", "Amount", "Grand total", "Cost above listed") are NOT items: put that number in stated_total (0 if none).
+5. work_description: 2-6 words, Title Case, the kind of work (e.g. "Electrical Work").
+6. notes: only useful work context. Leave "" for totals, "please share/send quotation", urgent/ASAP, etc.
 """
 
 
-# ── Everything below is worked out in code, so the AI does not spend tokens writing it ──
-_QTY = re.compile(r'(?<![A-Za-z0-9])(\d+(?:\.\d+)?\s*(?:mtrs?|meters?|metres?|m|ft|feet|foot|kgs?|gms?|grams?|ltrs?|litres?|liters?|l|ml|'
+# ── Everything below is worked out in code ──
+_QTY = re.compile(r'(?<![A-Za-z0-9])(\d+(?:\.\d+)?\s*(?:mtrs?|meters?|metres?|m|ft|feet|foot|sq\.?\s*ft|sqft|'
+                  r'kgs?|gms?|grams?|ltrs?|litres?|liters?|l|ml|'
                   r'nos?|pcs?|pieces?|sets?|bags?|rolls?|boxes?))\b', re.I)
 
 
 def _segments(message):
-    """Lines of the message, further split at commas/semicolons: 'a, b, c' lists are three items."""
     segs = []
     for line in (message or '').splitlines():
         for part in re.split(r'[;,]\s*', line):
@@ -62,7 +58,6 @@ def _words(text):
 
 
 def _best_segment(name, segments, used):
-    """The part of the message an item came from (typos in the message vs the corrected name are tolerated)."""
     nw = _words(name)
     if not nw:
         return ''
@@ -82,8 +77,6 @@ def _best_segment(name, segments, used):
 
 
 def _fallback_items(message):
-    """Only used when the AI returned NO items although the message lists lines and gives a total: the listed
-    lines become unpriced items, so the quote's line description still says what the total covers."""
     from .intake import BRAND_RE, CODE_RE, STORE_WORD_RE
     skip = re.compile(r'(total|tot\.?\s*amount|\bamount\b|\bcost\b|quot|quat|question|kindly|please|urgent|asap|advance|@|mail|^work\b|^store\b)', re.I)
     out = []
@@ -96,12 +89,11 @@ def _fallback_items(message):
 
 
 def _enrich(items, message):
-    """Add raw_line, unit_type, measure_text and listed_as (used by rules.py) without asking the AI for them."""
     from .rules import MEASURE_RE
     segs, used = _segments(message), set()
     for it in items:
         cleaned = re.sub(r'\s+', ' ', _QTY.sub(' ', MEASURE_RE.sub(' ', it['name']))).strip(' -:.,')
-        it['name'] = cleaned or it['name']            # "2 Meter Heater Sleeves" -> "Heater Sleeves" (the length is added once below)
+        it['name'] = cleaned or it['name']
         raw = _best_segment(it['name'], segs, used)
         it['raw_line'] = raw
         m = MEASURE_RE.search(raw)
@@ -121,7 +113,7 @@ def _num(v):
 
 def parse_message(message, **groq_kwargs):
     msg = (message or '').strip()
-    if len(msg) > 3000:  # same guard as the existing QuoteBot
+    if len(msg) > 3000:
         msg = msg[:3000]
     lines = msg.count('\n') + 1
     data = groq_client.chat_json(PROMPT.replace('__MESSAGE__', msg), max_tokens=min(900, 200 + 60 * lines),
